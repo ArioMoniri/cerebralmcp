@@ -57,6 +57,15 @@ export default function VoiceInput({
   const commitTimerRef = useRef<number | null>(null);
   const SILENCE_COMMIT_MS = 1200;
 
+  // continuous:true keeps every result (interim + final) in event.results FOREVER,
+  // so subsequent onresult events contain already-committed text. We track what we
+  // last emitted and strip it as a prefix from new events, so each commit is only
+  // the *delta* of what's been said since the last commit.
+  const allTextRef = useRef('');
+  const lastCommittedTextRef = useRef('');
+  // Suppress onresult events while the mic is in a teardown/restart cycle.
+  const suppressResultsRef = useRef(false);
+
   // Map frontend locale to BCP-47 for Web Speech API
   const speechLang = locale === 'tr' ? 'tr-TR' : 'en-US';
 
@@ -90,55 +99,51 @@ export default function VoiceInput({
       rec.maxAlternatives = 1;
 
       rec.onresult = (event: any) => {
-        let interim = '';
-        let finalText = '';
-        // Walk ALL results (not just from resultIndex) so we can accumulate
-        // interim across a single utterance.
+        if (suppressResultsRef.current) return;
+
+        // Walk ALL results and build the full accumulated transcript — this
+        // includes every result the browser has kept since rec.start().
+        let allText = '';
         for (let i = 0; i < event.results.length; i++) {
-          const r = event.results[i];
-          if (r.isFinal) {
-            finalText += r[0].transcript + ' ';
-          } else {
-            interim += r[0].transcript + ' ';
-          }
+          allText += event.results[i][0].transcript + ' ';
+        }
+        allText = allText.trim();
+        allTextRef.current = allText;
+
+        // Strip already-committed prefix so we only react to NEW speech.
+        const committed = lastCommittedTextRef.current;
+        let newText = allText;
+        if (committed && allText.startsWith(committed)) {
+          newText = allText.slice(committed.length).trim();
+        } else if (committed && allText.length < committed.length) {
+          // Rec result buffer was reset (fresh rec instance) — clear tracker.
+          lastCommittedTextRef.current = '';
+          newText = allText;
         }
 
-        // If the browser gave us a real final result, commit it immediately.
-        if (finalText.trim()) {
-          if (commitTimerRef.current) {
-            clearTimeout(commitTimerRef.current);
-            commitTimerRef.current = null;
-          }
-          const combined = (finalText + interim).trim();
+        if (!newText) return;
+
+        interimBufferRef.current = newText;
+        setLiveText(newText);
+        onInterim?.(newText);
+
+        // Arm the silence-commit timer on every interim update.
+        if (commitTimerRef.current) clearTimeout(commitTimerRef.current);
+        commitTimerRef.current = window.setTimeout(() => {
+          commitTimerRef.current = null;
+          const pending = interimBufferRef.current.trim();
+          if (!pending) return;
           interimBufferRef.current = '';
           setLiveText('');
           onInterim?.('');
-          onTranscript(combined);
-          return;
-        }
-
-        // Otherwise buffer interim and (re)arm the silence-commit timer.
-        const trimmed = interim.trim();
-        if (trimmed) {
-          interimBufferRef.current = trimmed;
-          setLiveText(trimmed);
-          onInterim?.(trimmed);
-
-          if (commitTimerRef.current) clearTimeout(commitTimerRef.current);
-          commitTimerRef.current = window.setTimeout(() => {
-            commitTimerRef.current = null;
-            const pending = interimBufferRef.current.trim();
-            if (pending) {
-              interimBufferRef.current = '';
-              setLiveText('');
-              onInterim?.('');
-              onTranscript(pending);
-              // After committing, restart the recognition so the next
-              // utterance gets a fresh result buffer.
-              try { recognitionRef.current?.stop(); } catch {}
-            }
-          }, SILENCE_COMMIT_MS);
-        }
+          // Snapshot the current accumulated text as "committed" so the next
+          // onresult event (which will still contain this text) is ignored.
+          lastCommittedTextRef.current = allTextRef.current;
+          // Do NOT stop the rec here — let the parent's setIsStreaming(true)
+          // cycle drive teardown via stopWebSpeech. Stopping here races with
+          // that and leaves Chrome's SR engine in a bad state.
+          onTranscript(pending);
+        }, SILENCE_COMMIT_MS);
       };
 
       rec.onerror = (e: any) => {
@@ -151,10 +156,27 @@ export default function VoiceInput({
 
       rec.onend = () => {
         setIsRecording(false);
-        if (shouldRestartRef.current && !pausedRef.current && !disabled) {
-          try { rec.start(); setIsRecording(true); } catch {}
+        // Chrome auto-ends continuous recognition after long silence. If we
+        // still want to be listening, recreate a fresh rec (not the same
+        // instance — that leaves Chrome's SR engine in a dead state).
+        // Use refs (not the closed-over `disabled` prop) so the gate stays
+        // fresh across renders.
+        if (shouldRestartRef.current && !pausedRef.current) {
+          setTimeout(() => {
+            if (!shouldRestartRef.current || pausedRef.current) return;
+            // Tear down this rec fully and start a fresh one so the result
+            // buffer is clean and we don't hit "already started" errors.
+            recognitionRef.current = null;
+            startWebSpeech();
+          }, 150);
         }
       };
+
+      // Reset per-session trackers for the new rec instance.
+      allTextRef.current = '';
+      lastCommittedTextRef.current = '';
+      interimBufferRef.current = '';
+      suppressResultsRef.current = false;
 
       rec.start();
       recognitionRef.current = rec;
@@ -191,6 +213,7 @@ export default function VoiceInput({
 
   const stopWebSpeech = useCallback(() => {
     shouldRestartRef.current = false;
+    suppressResultsRef.current = true;
     // Flush any pending interim before tearing down — prevents losing the
     // last utterance when the agent starts speaking mid-sentence.
     flushInterim();
@@ -202,6 +225,11 @@ export default function VoiceInput({
     audioCtxRef.current?.close().catch(() => {});
     audioCtxRef.current = null;
     analyserRef.current = null;
+    // Reset commit-tracking so the next fresh rec isn't confused by stale
+    // prefixes from the previous session.
+    allTextRef.current = '';
+    lastCommittedTextRef.current = '';
+    interimBufferRef.current = '';
     setIsRecording(false);
     setLiveText('');
   }, [flushInterim]);
