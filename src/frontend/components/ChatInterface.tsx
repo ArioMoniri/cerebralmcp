@@ -28,18 +28,25 @@ export default function ChatInterface({
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [chatHistory]);
 
-  // Auto-start interview
+  // Auto-start interview in the browser's language
   useEffect(() => {
     if (chatHistory.length === 0) {
-      sendMessage('Merhaba, görüşmeye hazırım.');
+      const browserLang = typeof navigator !== 'undefined'
+        ? (navigator.language || 'tr').toLowerCase()
+        : 'tr';
+      // Use BCP-47 tag (e.g. "tr-TR", "en-US", "de-DE", "fr-FR")
+      sendMessage(`__START_INTERVIEW__:${browserLang}`);
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const sendMessage = async (text: string) => {
     if (!text.trim() || isStreaming) return;
 
+    const isSystemStart = text.startsWith('__START_INTERVIEW__:');
     const userMsg: Message = { role: 'user', content: text.trim(), timestamp: new Date().toISOString() };
-    setChatHistory(prev => [...prev, userMsg]);
+    if (!isSystemStart) {
+      setChatHistory(prev => [...prev, userMsg]);
+    }
     setInput('');
     setIsStreaming(true);
 

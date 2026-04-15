@@ -229,18 +229,33 @@ async def chat(msg: ChatMessage):
 
     client = anthropic.Anthropic()
 
-    # Build the interview system prompt
+    # Handle synthetic interview-start signal from the frontend
+    # Format: "__START_INTERVIEW__:<browser-locale>"
+    is_start = msg.message.startswith("__START_INTERVIEW__:")
+    if is_start:
+        locale_tag = msg.message.split(":", 1)[1].strip() or "tr-TR"
+        session["initial_language"] = locale_tag
+
+    # Build the interview system prompt (includes initial language if set)
     system_prompt = _build_interview_system_prompt(session)
 
-    # Add user message to history
-    session["chat_history"].append({
-        "role": "user",
-        "content": msg.message,
-        "timestamp": datetime.now().isoformat(),
-    })
+    # Add user message to history (skip the synthetic start marker)
+    if not is_start:
+        session["chat_history"].append({
+            "role": "user",
+            "content": msg.message,
+            "timestamp": datetime.now().isoformat(),
+        })
 
-    # Build messages for Claude
-    messages = [{"role": m["role"], "content": m["content"]} for m in session["chat_history"]]
+    # Build messages for Claude. If this is the start, seed with a neutral
+    # user turn instructing the agent to greet in the initial language.
+    if is_start:
+        messages = [{
+            "role": "user",
+            "content": f"[SYSTEM] Please greet the patient warmly and begin the pre-visit interview. The patient's browser language is '{session.get('initial_language', 'tr-TR')}', so use that language for your opening. Introduce yourself briefly, confirm their name ({session.get('summary', {}).get('patient', {}).get('name', '')}), and ask the reason for today's visit.",
+        }]
+    else:
+        messages = [{"role": m["role"], "content": m["content"]} for m in session["chat_history"]]
 
     response = client.messages.create(
         model="claude-opus-4-20250514",
@@ -251,17 +266,21 @@ async def chat(msg: ChatMessage):
 
     assistant_text = response.content[0].text
 
+    # Strip emotion/action tags like [warmly] [gently] for chat display
+    display_text = re.sub(r"\[[a-zA-Z ]{1,20}\]\s*", "", assistant_text).strip()
+
     session["chat_history"].append({
         "role": "assistant",
-        "content": assistant_text,
+        "content": display_text,
         "timestamp": datetime.now().isoformat(),
     })
 
     # Check if interview is complete (assistant signals completion)
-    is_complete = "PRE-VİZİT HASTA ÖN-GÖRÜŞME ÖZETİ" in assistant_text
+    is_complete = "PRE-VİZİT HASTA ÖN-GÖRÜŞME ÖZETİ" in assistant_text or "PRE-VISIT PATIENT SUMMARY" in assistant_text
 
     return {
-        "response": assistant_text,
+        "response": display_text,
+        "tts_text": assistant_text,  # raw with emotion tags for TTS
         "is_complete": is_complete,
         "messages_count": len(session["chat_history"]),
     }
@@ -465,6 +484,7 @@ def _build_interview_system_prompt(session: dict) -> str:
     summary = session.get("summary", {})
     department = session.get("department", "Genel")
     patient = summary.get("patient", {})
+    initial_language = session.get("initial_language", "tr-TR")
 
     patient_context = ""
     if summary:
@@ -488,9 +508,44 @@ You are NOT a doctor. You do NOT diagnose, interpret symptoms, suggest tests, or
 
 {patient_context}
 
-LANGUAGE: ALL patient-facing communication MUST be in Turkish. Use warm, accessible Turkish.
-QUESTIONING: Ask 1-2 questions per turn. Start open-ended, then narrow.
-VERIFICATION: Briefly repeat back critical information to confirm.
+LANGUAGE POLICY (CRITICAL):
+- Your FIRST message (the opening greeting) MUST be in the language matching this BCP-47 tag: {initial_language}
+  (e.g. "tr-TR" → Turkish, "en-US"/"en-GB" → English, "de-DE" → German, "fr-FR" → French, "ar-*" → Arabic, "fa-*" → Persian, "ru-RU" → Russian, etc.)
+- Starting from the SECOND turn onward, AUTOMATICALLY DETECT the language the patient is writing/speaking in, and reply in THAT language.
+- If the patient switches language mid-conversation, switch with them on the next reply.
+- If the patient mixes languages in one message, reply in the dominant language of that message.
+- Always use warm, accessible, non-clinical vocabulary appropriate to the language.
+
+EMOTIONAL TONE (for TTS voice output):
+- You may prepend short emotion/action tags at the START of sentences when appropriate, using square-bracket format: [warmly], [gently], [reassuring], [curious], [concerned], [empathetic], [softly], [pauses].
+- Use tags sparingly — 1-2 per response, only when they add real warmth. Example: "[warmly] Merhaba, ben ön-görüşme asistanınızım."
+- These tags will be interpreted by the ElevenLabs voice synthesizer to add emotional inflection. Never overuse.
+
+COMMUNICATION STYLE (CRITICAL):
+- Be PROFESSIONAL, DIRECT, and CONCISE. No filler, no redundancy.
+- Do NOT echo back what the patient said ("Anladım, baş ağrınız var" is banned — just ask the next question).
+- Do NOT announce what you are about to do ("Birkaç soru sormam gerekiyor" is banned).
+- Go straight to the question. Maximum 2-3 short sentences per turn.
+- Use clear clinical language the patient can understand, but without unnecessary softening.
+- Prefer bullet-free prose — speak like a calm, experienced triage nurse, not a chatbot.
+
+QUESTIONING:
+- Ask EXACTLY ONE focused question per turn (occasionally 2 if tightly related).
+- Start broad, then narrow based on the answer.
+- Never ask multi-part questions separated by "and" / "or" unless they are two parts of the same concept.
+
+VERIFICATION:
+- Only verify CRITICAL info (medication dose, allergy, red-flag symptom). Do not parrot every answer.
+
+EXAMPLE OF GOOD STYLE (Turkish):
+BAD:  "Anladım, baş ağrınız var. Bu şikayetinizle ilgili birkaç soru sormam gerekiyor. Baş ağrınız ne zaman başladı? Ve başınızın tam olarak hangi bölgesinde ağrı hissediyorsunuz - ön taraf, yan taraflar, arka taraf veya tüm başınızda mı?"
+GOOD: "Baş ağrısı ne zaman başladı?"
+Then next turn: "Ağrıyı en çok nerede hissediyorsunuz?"
+
+EXAMPLE OF GOOD STYLE (English):
+BAD:  "I understand you have a headache. I need to ask you a few questions about this complaint. When did your headache start, and where exactly do you feel the pain?"
+GOOD: "When did the headache start?"
+Then next turn: "Where do you feel it most?"
 
 INFORMATION TO COLLECT (in priority order):
 P1 — CRITICAL: Chief complaint + Symptom characterization (location, character, severity 1-10, timing, exacerbating/relieving factors, associated symptoms)

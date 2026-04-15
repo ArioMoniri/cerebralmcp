@@ -28,7 +28,9 @@ import httpx
 
 ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY", "")
 ELEVENLABS_VOICE_ID = os.environ.get("ELEVENLABS_VOICE_ID", "pFZP5JQG7iQjIQuC4Bku")  # Warm Turkish female
-ELEVENLABS_MODEL = "eleven_turbo_v2_5"  # Fastest, multilingual
+# eleven_v3 supports emotion/action audio tags like [warmly], [gently], [reassuring].
+# Fallback to turbo for speed if the v3 model is not accessible on your account.
+ELEVENLABS_MODEL = os.environ.get("ELEVENLABS_MODEL", "eleven_v3")
 
 DEEPGRAM_API_KEY = os.environ.get("DEEPGRAM_API_KEY", "")
 
@@ -77,13 +79,14 @@ class VoiceAgent:
             resp.raise_for_status()
             data = resp.json()
 
-        response_text = data["response"]
+        response_text = data["response"]  # clean, tag-free, for display
+        tts_text = data.get("tts_text", response_text)  # with emotion tags for TTS
         is_complete = data.get("is_complete", False)
 
-        # Generate TTS audio
+        # Generate TTS audio using the tagged text for emotional inflection
         audio_chunks = []
         if ELEVENLABS_API_KEY:
-            audio_chunks = await self._text_to_speech(response_text)
+            audio_chunks = await self._text_to_speech(tts_text)
 
         return {
             "text": response_text,
@@ -139,9 +142,11 @@ class VoiceAgent:
                     "text": text,
                     "model_id": ELEVENLABS_MODEL,
                     "voice_settings": {
-                        "stability": 0.5,
-                        "similarity_boost": 0.8,
-                        "style": 0.3,  # Warm, empathetic
+                        # Lower stability = more expressive/emotional range
+                        "stability": 0.35,
+                        "similarity_boost": 0.85,
+                        # Higher style = stronger emotional inflection from tags
+                        "style": 0.75,
                         "use_speaker_boost": True,
                     },
                     "output_format": "mp3_44100_128",
