@@ -104,6 +104,7 @@ export default function Home() {
                 chatHistory={chatHistory}
                 setChatHistory={setChatHistory}
                 onInterviewComplete={handleInterviewComplete}
+                onSummaryUpdate={setPatientSummary}
               />
             </div>
 

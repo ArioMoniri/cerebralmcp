@@ -345,6 +345,76 @@ async def chat_stream(msg: ChatMessage):
     return StreamingResponse(generate(), media_type="text/event-stream")
 
 
+@app.post("/api/session/{session_id}/refresh-summary")
+async def refresh_summary(session_id: str):
+    """Re-extract facts from the live interview and merge into the patient summary.
+
+    Runs a fast Claude Haiku pass over (base EHR summary + chat transcript so far)
+    and returns an updated PatientSummary. The frontend calls this after every
+    chat turn so the side panel can update in real time as the patient speaks.
+    """
+    session = sessions.get(session_id)
+    if not session:
+        raise HTTPException(404, "Session not found")
+
+    try:
+        import anthropic
+    except ImportError:
+        raise HTTPException(500, "anthropic package not installed")
+
+    history = session.get("chat_history", [])
+    if not history:
+        # Nothing new to extract — just return current summary.
+        return {"summary": session.get("summary", {}), "updated": False}
+
+    base_summary = session.get("summary", {}) or {}
+    transcript = "\n".join(
+        f"{'Patient' if m['role'] == 'user' else 'Assistant'}: {m['content']}"
+        for m in history[-40:]  # last ~40 turns is plenty of context
+    )
+
+    prompt = f"""You are a clinical fact extractor. Your job is to merge facts learned during a live pre-visit interview into the patient's structured summary.
+
+Rules:
+- START from the existing summary JSON (don't drop any fields).
+- ADD or UPDATE fields based on what the patient told the assistant in the transcript.
+- If the patient mentions a new symptom, add it to active_problems.
+- If the patient mentions a medication, allergy, or chronic condition not already listed, add it.
+- If the patient mentions severity, onset, or duration of a complaint, append it to pre_visit_focus_areas.
+- Never invent facts — only use what the patient explicitly stated.
+- Keep all pre-existing EHR fields (visit_history, recent_labs, etc.) intact.
+- Return the COMPLETE updated summary JSON (same schema as input).
+
+EXISTING SUMMARY:
+{json.dumps(base_summary, ensure_ascii=False)[:20000]}
+
+LIVE INTERVIEW TRANSCRIPT:
+{transcript[:15000]}
+
+Return ONLY the updated JSON object. No prose, no markdown fences."""
+
+    try:
+        client = anthropic.Anthropic()
+        response = client.messages.create(
+            model="claude-3-5-haiku-20241022",
+            max_tokens=3000,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        text = response.content[0].text
+        match = re.search(r'\{.*\}', text, re.DOTALL)
+        if match:
+            updated = json.loads(match.group())
+            # Persist back to session so subsequent turns see the richer context.
+            session["summary"] = updated
+            return {"summary": updated, "updated": True}
+        return {"summary": base_summary, "updated": False}
+    except json.JSONDecodeError:
+        return {"summary": base_summary, "updated": False}
+    except Exception as e:
+        # Never break the UX if the extractor fails — just return the existing summary.
+        return {"summary": base_summary, "updated": False, "error": str(e)[:200]}
+
+
 @app.get("/api/session/{session_id}/interview-state")
 async def get_interview_state(session_id: str):
     """Get current interview progress."""

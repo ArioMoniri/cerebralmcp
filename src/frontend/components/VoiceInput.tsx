@@ -50,8 +50,30 @@ export default function VoiceInput({
   const pausedRef = useRef(false);
   const useWebSpeechRef = useRef(false);
 
+  // Silence-based commit: if interim text hasn't changed for N ms, treat it as final.
+  // Web Speech API with continuous:true is inconsistent about firing isFinal, so we
+  // force-commit pending interim after a short silence.
+  const interimBufferRef = useRef('');
+  const commitTimerRef = useRef<number | null>(null);
+  const SILENCE_COMMIT_MS = 1200;
+
   // Map frontend locale to BCP-47 for Web Speech API
   const speechLang = locale === 'tr' ? 'tr-TR' : 'en-US';
+
+  // Commit pending interim text as a final transcript (used by silence timer + pause).
+  const flushInterim = useCallback(() => {
+    if (commitTimerRef.current) {
+      clearTimeout(commitTimerRef.current);
+      commitTimerRef.current = null;
+    }
+    const pending = interimBufferRef.current.trim();
+    if (pending) {
+      interimBufferRef.current = '';
+      setLiveText('');
+      onInterim?.('');
+      onTranscript(pending);
+    }
+  }, [onInterim, onTranscript]);
 
   // ── Web Speech API (primary) ─────────────────────────────────────────
   const startWebSpeech = useCallback(() => {
@@ -70,22 +92,52 @@ export default function VoiceInput({
       rec.onresult = (event: any) => {
         let interim = '';
         let finalText = '';
-        for (let i = event.resultIndex; i < event.results.length; i++) {
+        // Walk ALL results (not just from resultIndex) so we can accumulate
+        // interim across a single utterance.
+        for (let i = 0; i < event.results.length; i++) {
           const r = event.results[i];
           if (r.isFinal) {
-            finalText += r[0].transcript;
+            finalText += r[0].transcript + ' ';
           } else {
-            interim += r[0].transcript;
+            interim += r[0].transcript + ' ';
           }
         }
-        if (interim) {
-          setLiveText(interim);
-          onInterim?.(interim);
-        }
+
+        // If the browser gave us a real final result, commit it immediately.
         if (finalText.trim()) {
+          if (commitTimerRef.current) {
+            clearTimeout(commitTimerRef.current);
+            commitTimerRef.current = null;
+          }
+          const combined = (finalText + interim).trim();
+          interimBufferRef.current = '';
           setLiveText('');
           onInterim?.('');
-          onTranscript(finalText.trim());
+          onTranscript(combined);
+          return;
+        }
+
+        // Otherwise buffer interim and (re)arm the silence-commit timer.
+        const trimmed = interim.trim();
+        if (trimmed) {
+          interimBufferRef.current = trimmed;
+          setLiveText(trimmed);
+          onInterim?.(trimmed);
+
+          if (commitTimerRef.current) clearTimeout(commitTimerRef.current);
+          commitTimerRef.current = window.setTimeout(() => {
+            commitTimerRef.current = null;
+            const pending = interimBufferRef.current.trim();
+            if (pending) {
+              interimBufferRef.current = '';
+              setLiveText('');
+              onInterim?.('');
+              onTranscript(pending);
+              // After committing, restart the recognition so the next
+              // utterance gets a fresh result buffer.
+              try { recognitionRef.current?.stop(); } catch {}
+            }
+          }, SILENCE_COMMIT_MS);
         }
       };
 
@@ -139,6 +191,9 @@ export default function VoiceInput({
 
   const stopWebSpeech = useCallback(() => {
     shouldRestartRef.current = false;
+    // Flush any pending interim before tearing down — prevents losing the
+    // last utterance when the agent starts speaking mid-sentence.
+    flushInterim();
     try { recognitionRef.current?.stop(); } catch {}
     recognitionRef.current = null;
     if (rafRef.current) { cancelAnimationFrame(rafRef.current); rafRef.current = null; }
@@ -149,7 +204,7 @@ export default function VoiceInput({
     analyserRef.current = null;
     setIsRecording(false);
     setLiveText('');
-  }, []);
+  }, [flushInterim]);
 
   // ── Fallback: MediaRecorder + /api/stt ───────────────────────────────
   const sendAudio = useCallback(async (blob: Blob) => {

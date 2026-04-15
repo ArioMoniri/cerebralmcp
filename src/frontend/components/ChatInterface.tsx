@@ -3,7 +3,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { Locale, t } from '@/lib/i18n';
-import { Message } from '@/lib/types';
+import { Message, PatientSummary } from '@/lib/types';
 import { API_BASE, apiFetch, parseError } from '@/lib/api';
 import VoiceInput from './VoiceInput';
 
@@ -14,10 +14,11 @@ interface ChatInterfaceProps {
   chatHistory: Message[];
   setChatHistory: React.Dispatch<React.SetStateAction<Message[]>>;
   onInterviewComplete: () => void;
+  onSummaryUpdate?: (summary: PatientSummary) => void;
 }
 
 export default function ChatInterface({
-  locale, sessionId, patientName, chatHistory, setChatHistory, onInterviewComplete,
+  locale, sessionId, patientName, chatHistory, setChatHistory, onInterviewComplete, onSummaryUpdate,
 }: ChatInterfaceProps) {
   const [input, setInput] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
@@ -117,6 +118,18 @@ export default function ChatInterface({
 
       if (data.is_complete) {
         onInterviewComplete();
+      }
+
+      // Fire-and-forget: re-extract facts from the live interview and update
+      // the patient summary panel in real time. Uses Claude Haiku so it lands
+      // in ~1s without blocking the next question.
+      if (onSummaryUpdate && !isSystemStart) {
+        apiFetch(`/api/session/${sessionId}/refresh-summary`, { method: 'POST' }, 30_000)
+          .then(r => r.ok ? r.json() : null)
+          .then(payload => {
+            if (payload?.summary) onSummaryUpdate(payload.summary);
+          })
+          .catch(() => { /* silent — summary refresh is best-effort */ });
       }
     } catch {
       setChatHistory(prev => [...prev, {
