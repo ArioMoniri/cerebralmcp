@@ -1,0 +1,89 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+:root {
+  --bg: #0f1117;
+  --surface: #1a1d27;
+  --card: #222533;
+  --border: #2d3148;
+  --accent: #6c5ce7;
+  --accent-light: #a29bfe;
+  --teal: #00cec9;
+  --green: #00b894;
+  --orange: #fdcb6e;
+  --red: #ff6b6b;
+  --text: #e2e8f0;
+  --muted: #8892b0;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 6px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background-color: var(--border);
+  border-radius: 3px;
+}
+
+body {
+  background-color: var(--bg);
+  color: var(--text);
+  font-family: 'Inter', system-ui, sans-serif;
+}
+
+@layer components {
+  .glass-card {
+    @apply bg-cerebral-card/80 backdrop-blur-sm border border-cerebral-border rounded-xl;
+  }
+
+  .glow-accent {
+    box-shadow: 0 0 20px rgba(108, 92, 231, 0.15);
+  }
+
+  .glow-teal {
+    box-shadow: 0 0 20px rgba(0, 206, 201, 0.15);
+  }
+
+  .pulse-dot {
+    @apply w-2.5 h-2.5 rounded-full bg-cerebral-green;
+    animation: pulse-glow 2s ease-in-out infinite;
+  }
+
+  @keyframes pulse-glow {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(0, 184, 148, 0.4); }
+    50% { box-shadow: 0 0 0 8px rgba(0, 184, 148, 0); }
+  }
+
+  .typing-indicator span {
+    @apply inline-block w-2 h-2 rounded-full bg-cerebral-accent;
+    animation: typing 1.4s infinite ease-in-out;
+  }
+
+  .typing-indicator span:nth-child(2) { animation-delay: 0.2s; }
+  .typing-indicator span:nth-child(3) { animation-delay: 0.4s; }
+
+  @keyframes typing {
+    0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
+    30% { transform: translateY(-8px); opacity: 1; }
+  }
+
+  .chat-bubble-user {
+    @apply bg-cerebral-accent/20 border border-cerebral-accent/30 rounded-2xl rounded-br-md;
+  }
+
+  .chat-bubble-ai {
+    @apply bg-cerebral-surface border border-cerebral-border rounded-2xl rounded-bl-md;
+  }
+}

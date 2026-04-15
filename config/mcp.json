@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "cerebral-mcp": {
+      "command": "python",
+      "args": ["-m", "src.mcp"],
+      "env": {
+        "ANTHROPIC_API_KEY": "${ANTHROPIC_API_KEY}"
+      }
+    }
+  }
+}
