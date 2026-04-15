@@ -187,8 +187,14 @@ async def ingest_patient(req: IngestRequest):
             "session_id": session_id,
             "patient_summary": summary,
         }
+    except FileNotFoundError as e:
+        raise HTTPException(503, f"Cookie file not found. Ensure cookies/cookies.json exists: {e}")
+    except RuntimeError as e:
+        raise HTTPException(502, f"Cerebral EHR connection failed: {e}")
+    except json.JSONDecodeError as e:
+        raise HTTPException(502, f"Invalid response from Cerebral EHR: {e}")
     except Exception as e:
-        raise HTTPException(500, str(e))
+        raise HTTPException(500, f"Unexpected error: {e}")
 
 
 @app.get("/api/patient/{session_id}/summary")

@@ -31,6 +31,9 @@ export default function PatientIngest({
   const [department, setDepartment] = useState('Kardiyoloji');
   const [error, setError] = useState('');
 
+  const capitalize = (s: string) =>
+    s.trim().split(/\s+/).map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' ');
+
   const handleIdentitySubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!firstName.trim() || !lastName.trim()) {
@@ -38,7 +41,7 @@ export default function PatientIngest({
       return;
     }
     setError('');
-    onIdentitySubmit({ firstName: firstName.trim(), lastName: lastName.trim() });
+    onIdentitySubmit({ firstName: capitalize(firstName), lastName: capitalize(lastName) });
   };
 
   const handleProtocolSubmit = async (e: React.FormEvent) => {
@@ -59,8 +62,14 @@ export default function PatientIngest({
       });
 
       if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.detail || 'Failed to ingest patient');
+        let detail = `Server error (${res.status})`;
+        try {
+          const err = await res.json();
+          detail = err.detail || detail;
+        } catch {
+          // Response wasn't JSON (e.g. plain "Internal Server Error")
+        }
+        throw new Error(detail);
       }
 
       const data = await res.json();
@@ -174,7 +183,7 @@ export default function PatientIngest({
             </div>
             <h2 className="text-2xl font-bold text-cerebral-text">{t(locale, 'protocolEntry')}</h2>
             <p className="text-sm text-cerebral-muted mt-2">{t(locale, 'protocolSubtitle')}</p>
-            <p className="text-xs text-cerebral-accent mt-1">{identity.firstName} {identity.lastName}</p>
+            <p className="text-xs text-cerebral-accent mt-1">{capitalize(identity.firstName)} {capitalize(identity.lastName)}</p>
           </div>
 
           <form onSubmit={handleProtocolSubmit} className="space-y-4">
