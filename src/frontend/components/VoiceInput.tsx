@@ -2,6 +2,7 @@
 
 import { useState, useRef, useCallback } from 'react';
 import { Locale, t } from '@/lib/i18n';
+import { WS_BASE } from '@/lib/api';
 
 interface VoiceInputProps {
   locale: Locale;
@@ -22,8 +23,7 @@ export default function VoiceInput({ locale, sessionId, onTranscript, disabled }
       const mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus' });
       mediaRecorderRef.current = mediaRecorder;
 
-      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const ws = new WebSocket(`${protocol}//${window.location.host}/ws/voice/${sessionId}`);
+      const ws = new WebSocket(`${WS_BASE}/ws/voice/${sessionId}`);
       wsRef.current = ws;
 
       ws.onmessage = (event) => {

@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { Locale, t } from '@/lib/i18n';
 import { Message, PatientIdentity, PatientSummary } from '@/lib/types';
+import { apiFetch } from '@/lib/api';
 
 interface Props {
   locale: Locale;
@@ -25,7 +26,7 @@ export default function CompletionScreen({
   const generateReport = async () => {
     setIsGenerating(true);
     try {
-      const res = await fetch(`/api/session/${sessionId}/generate-report`, { method: 'POST' });
+      const res = await apiFetch(`/api/session/${sessionId}/generate-report`, { method: 'POST' });
       if (res.ok) {
         const data = await res.json();
         setClinicalReport(data.report);

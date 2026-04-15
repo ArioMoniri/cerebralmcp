@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { Locale, t } from '@/lib/i18n';
 import { PatientIdentity, PatientSummary } from '@/lib/types';
+import { apiFetch } from '@/lib/api';
 
 interface Props {
   locale: Locale;
@@ -35,7 +36,7 @@ export default function PatientSummaryPanel({ locale, summary, sessionId, identi
       a.download = `patient_${p.patient_id || 'export'}.json`;
       a.click();
     } else if (format === 'markdown') {
-      fetch(`/api/export/${sessionId}/markdown`)
+      apiFetch(`/api/export/${sessionId}/markdown`)
         .then(r => r.text())
         .then(text => {
           const a = document.createElement('a');

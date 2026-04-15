@@ -4,6 +4,7 @@ import { useState, useRef, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { Locale, t } from '@/lib/i18n';
 import { Message } from '@/lib/types';
+import { apiFetch, parseError } from '@/lib/api';
 import VoiceInput from './VoiceInput';
 
 interface ChatInterfaceProps {
@@ -43,13 +44,13 @@ export default function ChatInterface({
     setIsStreaming(true);
 
     try {
-      const res = await fetch('/api/chat', {
+      const res = await apiFetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ session_id: sessionId, message: text.trim(), language: locale }),
       });
 
-      if (!res.ok) throw new Error('Chat request failed');
+      if (!res.ok) throw new Error(await parseError(res));
       const data = await res.json();
 
       setChatHistory(prev => [...prev, {

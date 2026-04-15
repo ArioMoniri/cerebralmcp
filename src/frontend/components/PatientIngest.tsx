@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { Locale, t } from '@/lib/i18n';
 import { AppStep, PatientIdentity } from '@/lib/types';
+import { apiFetch, parseError } from '@/lib/api';
 
 interface PatientIngestProps {
   locale: Locale;
@@ -52,7 +53,7 @@ export default function PatientIngest({
     setError('');
 
     try {
-      const res = await fetch('/api/patient/ingest', {
+      const res = await apiFetch('/api/patient/ingest', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -62,14 +63,7 @@ export default function PatientIngest({
       });
 
       if (!res.ok) {
-        let detail = `Server error (${res.status})`;
-        try {
-          const err = await res.json();
-          detail = err.detail || detail;
-        } catch {
-          // Response wasn't JSON (e.g. plain "Internal Server Error")
-        }
-        throw new Error(detail);
+        throw new Error(await parseError(res));
       }
 
       const data = await res.json();
