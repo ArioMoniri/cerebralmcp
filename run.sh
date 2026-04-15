@@ -17,7 +17,7 @@ fi
 # Start backend
 echo "[1/2] Starting backend API on :8000..."
 cd "$(dirname "$0")"
-uvicorn src.api.main:app --host 0.0.0.0 --port 8000 --reload &
+uvicorn src.api.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir src/api --reload-dir src/mcp --reload-dir src/voice &
 BACKEND_PID=$!
 
 # Start frontend
