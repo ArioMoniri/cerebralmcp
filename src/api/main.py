@@ -14,10 +14,17 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel
+
+import httpx
+
+ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY", "")
+ELEVENLABS_VOICE_ID = os.environ.get("ELEVENLABS_VOICE_ID", "pFZP5JQG7iQjIQuC4Bku")
+ELEVENLABS_MODEL = os.environ.get("ELEVENLABS_MODEL", "eleven_v3")
+DEEPGRAM_API_KEY = os.environ.get("DEEPGRAM_API_KEY", "")
 
 SCRIPTS_DIR = Path(__file__).resolve().parent.parent.parent / "scripts"
 COOKIES_DIR = Path(__file__).resolve().parent.parent.parent / "cookies"
@@ -56,6 +63,11 @@ class ChatMessage(BaseModel):
     session_id: str
     message: str
     language: str = "tr"
+
+
+class TTSRequest(BaseModel):
+    text: str
+    language: Optional[str] = None
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────
@@ -403,6 +415,103 @@ Generate the complete clinical summary in the specified format."""
         "format": "markdown",
         "generated_at": datetime.now().isoformat(),
     }
+
+
+@app.post("/api/tts")
+async def tts(req: TTSRequest):
+    """Synthesize speech from text using ElevenLabs eleven_v3 (emotion-aware).
+
+    Accepts the tagged text with [warmly] [gently] etc. and returns MP3 audio.
+    """
+    if not ELEVENLABS_API_KEY:
+        raise HTTPException(503, "ELEVENLABS_API_KEY not configured")
+
+    if not req.text.strip():
+        raise HTTPException(400, "text is required")
+
+    try:
+        async with httpx.AsyncClient(timeout=60) as client:
+            resp = await client.post(
+                f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVENLABS_VOICE_ID}/stream",
+                headers={
+                    "xi-api-key": ELEVENLABS_API_KEY,
+                    "Content-Type": "application/json",
+                    "Accept": "audio/mpeg",
+                },
+                json={
+                    "text": req.text,
+                    "model_id": ELEVENLABS_MODEL,
+                    "voice_settings": {
+                        "stability": 0.35,
+                        "similarity_boost": 0.85,
+                        "style": 0.75,
+                        "use_speaker_boost": True,
+                    },
+                    "output_format": "mp3_44100_128",
+                },
+            )
+            if resp.status_code != 200:
+                raise HTTPException(502, f"ElevenLabs error {resp.status_code}: {resp.text[:300]}")
+            return Response(content=resp.content, media_type="audio/mpeg")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"TTS failed: {e}")
+
+
+@app.post("/api/stt")
+async def stt(audio: UploadFile = File(...), language: Optional[str] = None):
+    """Transcribe audio using Deepgram nova-2 (multilingual)."""
+    if not DEEPGRAM_API_KEY:
+        raise HTTPException(503, "DEEPGRAM_API_KEY not configured")
+
+    try:
+        audio_bytes = await audio.read()
+        if not audio_bytes:
+            raise HTTPException(400, "Empty audio")
+
+        params: dict[str, Any] = {
+            "model": "nova-2",
+            "smart_format": "true",
+            "detect_language": "true",
+        }
+        if language:
+            params["language"] = language
+
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(
+                "https://api.deepgram.com/v1/listen",
+                params=params,
+                headers={
+                    "Authorization": f"Token {DEEPGRAM_API_KEY}",
+                    "Content-Type": audio.content_type or "audio/webm",
+                },
+                content=audio_bytes,
+            )
+            if resp.status_code != 200:
+                raise HTTPException(502, f"Deepgram error {resp.status_code}: {resp.text[:300]}")
+
+            data = resp.json()
+            alternatives = (
+                data.get("results", {})
+                .get("channels", [{}])[0]
+                .get("alternatives", [{}])
+            )
+            transcript = alternatives[0].get("transcript", "") if alternatives else ""
+            detected_lang = (
+                data.get("results", {})
+                .get("channels", [{}])[0]
+                .get("detected_language")
+            )
+            return {
+                "transcript": transcript,
+                "detected_language": detected_lang,
+                "confidence": alternatives[0].get("confidence") if alternatives else None,
+            }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"STT failed: {e}")
 
 
 @app.get("/api/export/{session_id}/{format}")

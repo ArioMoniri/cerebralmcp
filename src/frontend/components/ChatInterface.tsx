@@ -1,10 +1,10 @@
 'use client';
 
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { Locale, t } from '@/lib/i18n';
 import { Message } from '@/lib/types';
-import { apiFetch, parseError } from '@/lib/api';
+import { API_BASE, apiFetch, parseError } from '@/lib/api';
 import VoiceInput from './VoiceInput';
 
 interface ChatInterfaceProps {
@@ -21,12 +21,58 @@ export default function ChatInterface({
 }: ChatInterfaceProps) {
   const [input, setInput] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
-  const [isVoiceMode, setIsVoiceMode] = useState(false);
+  const [isVoiceMode, setIsVoiceMode] = useState(true); // voice-first by default
+  const [isAgentSpeaking, setIsAgentSpeaking] = useState(false);
+  const [liveTranscript, setLiveTranscript] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+
+  const playTTS = useCallback(async (text: string) => {
+    if (!text.trim()) return;
+    try {
+      setIsAgentSpeaking(true);
+      const res = await apiFetch('/api/tts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text }),
+      }, 120_000);
+      if (!res.ok) {
+        setIsAgentSpeaking(false);
+        return;
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      // Stop any previous playback
+      if (audioRef.current) {
+        try { audioRef.current.pause(); } catch {}
+      }
+      const audio = new Audio(url);
+      audioRef.current = audio;
+      audio.onended = () => {
+        setIsAgentSpeaking(false);
+        URL.revokeObjectURL(url);
+      };
+      audio.onerror = () => {
+        setIsAgentSpeaking(false);
+        URL.revokeObjectURL(url);
+      };
+      await audio.play();
+    } catch {
+      setIsAgentSpeaking(false);
+    }
+  }, []);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [chatHistory]);
+  }, [chatHistory, liveTranscript]);
+
+  // Stop any in-flight audio when the component unmounts
+  useEffect(() => {
+    return () => {
+      try { audioRef.current?.pause(); } catch {}
+      audioRef.current = null;
+    };
+  }, []);
 
   // Auto-start interview in the browser's language
   useEffect(() => {
@@ -63,6 +109,11 @@ export default function ChatInterface({
       setChatHistory(prev => [...prev, {
         role: 'assistant', content: data.response, timestamp: new Date().toISOString(),
       }]);
+
+      // Auto-play TTS for the agent's reply (with emotion tags preserved)
+      if (isVoiceMode && data.tts_text) {
+        playTTS(data.tts_text);
+      }
 
       if (data.is_complete) {
         onInterviewComplete();
@@ -121,6 +172,26 @@ export default function ChatInterface({
           </div>
         ))}
 
+        {liveTranscript && !isStreaming && (
+          <div className="flex justify-end fade-in">
+            <div className="max-w-[80%]">
+              <div className="flex items-start gap-3 flex-row-reverse">
+                <div className="w-8 h-8 rounded-full bg-cerebral-accent/10 text-cerebral-accent/60 flex items-center justify-center flex-shrink-0">
+                  <svg className="w-4 h-4 animate-pulse" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                      d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
+                  </svg>
+                </div>
+                <div className="chat-bubble-user px-4 py-3 opacity-60 border border-dashed border-cerebral-accent/40">
+                  <div className="text-sm leading-relaxed italic text-cerebral-text/80">
+                    {liveTranscript}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
         {isStreaming && (
           <div className="flex items-start gap-3">
             <div className="w-8 h-8 rounded-full bg-cerebral-teal/20 text-cerebral-teal flex items-center justify-center">
@@ -154,7 +225,15 @@ export default function ChatInterface({
           </button>
 
           {isVoiceMode ? (
-            <VoiceInput locale={locale} sessionId={sessionId} onTranscript={sendMessage} disabled={isStreaming} />
+            <VoiceInput
+              locale={locale}
+              sessionId={sessionId}
+              onTranscript={(text) => { setLiveTranscript(''); sendMessage(text); }}
+              onInterim={setLiveTranscript}
+              disabled={isStreaming}
+              autoStart={true}
+              isAgentSpeaking={isAgentSpeaking || isStreaming}
+            />
           ) : (
             <>
               <div className="flex-1">

@@ -68,6 +68,12 @@ export const translations = {
     tapToSpeak: 'Konuşmak için mikrofona dokunun',
     switchToText: 'Yazıya geç',
     switchToVoice: 'Sese geç',
+    agentSpeaking: 'Asistan konuşuyor...',
+    processing: 'İşleniyor...',
+    start: 'Başlat',
+    stop: 'Durdur',
+    micDenied: 'Mikrofon erişimi reddedildi',
+    liveTranscribing: 'Konuşuyorsunuz...',
 
     // Interview Progress
     interviewProgress: 'Görüşme İlerleme',
@@ -201,6 +207,12 @@ export const translations = {
     tapToSpeak: 'Tap the microphone to start speaking',
     switchToText: 'Switch to text',
     switchToVoice: 'Switch to voice',
+    agentSpeaking: 'Assistant speaking...',
+    processing: 'Processing...',
+    start: 'Start',
+    stop: 'Stop',
+    micDenied: 'Microphone access denied',
+    liveTranscribing: 'You are speaking...',
 
     // Interview Progress
     interviewProgress: 'Interview Progress',
