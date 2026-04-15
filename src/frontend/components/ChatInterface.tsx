@@ -2,55 +2,43 @@
 
 import { useState, useRef, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
+import { Locale, t } from '@/lib/i18n';
+import { Message } from '@/lib/types';
 import VoiceInput from './VoiceInput';
 
-interface Message {
-  role: string;
-  content: string;
-  timestamp: string;
-}
-
 interface ChatInterfaceProps {
+  locale: Locale;
   sessionId: string;
+  patientName: string;
   chatHistory: Message[];
   setChatHistory: React.Dispatch<React.SetStateAction<Message[]>>;
   onInterviewComplete: () => void;
 }
 
 export default function ChatInterface({
-  sessionId,
-  chatHistory,
-  setChatHistory,
-  onInterviewComplete,
+  locale, sessionId, patientName, chatHistory, setChatHistory, onInterviewComplete,
 }: ChatInterfaceProps) {
   const [input, setInput] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
   const [isVoiceMode, setIsVoiceMode] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLTextAreaElement>(null);
 
-  // Auto-scroll to bottom
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [chatHistory]);
 
-  // Auto-start: send initial greeting if no messages
+  // Auto-start interview
   useEffect(() => {
     if (chatHistory.length === 0) {
       sendMessage('Merhaba, görüşmeye hazırım.');
     }
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const sendMessage = async (text: string) => {
     if (!text.trim() || isStreaming) return;
 
-    const userMsg: Message = {
-      role: 'user',
-      content: text.trim(),
-      timestamp: new Date().toISOString(),
-    };
-
-    setChatHistory((prev) => [...prev, userMsg]);
+    const userMsg: Message = { role: 'user', content: text.trim(), timestamp: new Date().toISOString() };
+    setChatHistory(prev => [...prev, userMsg]);
     setInput('');
     setIsStreaming(true);
 
@@ -58,38 +46,23 @@ export default function ChatInterface({
       const res = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          session_id: sessionId,
-          message: text.trim(),
-          language: 'tr',
-        }),
+        body: JSON.stringify({ session_id: sessionId, message: text.trim(), language: locale }),
       });
 
       if (!res.ok) throw new Error('Chat request failed');
-
       const data = await res.json();
 
-      const assistantMsg: Message = {
-        role: 'assistant',
-        content: data.response,
-        timestamp: new Date().toISOString(),
-      };
-
-      setChatHistory((prev) => [...prev, assistantMsg]);
+      setChatHistory(prev => [...prev, {
+        role: 'assistant', content: data.response, timestamp: new Date().toISOString(),
+      }]);
 
       if (data.is_complete) {
         onInterviewComplete();
       }
-    } catch (err) {
-      console.error('Chat error:', err);
-      setChatHistory((prev) => [
-        ...prev,
-        {
-          role: 'assistant',
-          content: 'Bağlantı hatası oluştu. Lütfen tekrar deneyin.',
-          timestamp: new Date().toISOString(),
-        },
-      ]);
+    } catch {
+      setChatHistory(prev => [...prev, {
+        role: 'assistant', content: t(locale, 'connectionError'), timestamp: new Date().toISOString(),
+      }]);
     } finally {
       setIsStreaming(false);
     }
@@ -102,28 +75,17 @@ export default function ChatInterface({
     }
   };
 
-  const handleVoiceTranscript = (transcript: string) => {
-    sendMessage(transcript);
-  };
-
   return (
     <div className="flex flex-col h-full">
-      {/* Messages Area */}
+      {/* Messages */}
       <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
         {chatHistory.map((msg, i) => (
-          <div
-            key={i}
-            className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
-          >
-            <div className={`max-w-[80%] ${msg.role === 'user' ? 'order-1' : 'order-1'}`}>
-              {/* Avatar */}
+          <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'} fade-in`}>
+            <div className="max-w-[80%]">
               <div className={`flex items-start gap-3 ${msg.role === 'user' ? 'flex-row-reverse' : ''}`}>
+                {/* Avatar */}
                 <div className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0
-                  ${msg.role === 'user'
-                    ? 'bg-cerebral-accent/20 text-cerebral-accent'
-                    : 'bg-cerebral-teal/20 text-cerebral-teal'
-                  }`}
-                >
+                  ${msg.role === 'user' ? 'bg-cerebral-accent/20 text-cerebral-accent' : 'bg-cerebral-teal/20 text-cerebral-teal'}`}>
                   {msg.role === 'user' ? (
                     <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
@@ -143,10 +105,7 @@ export default function ChatInterface({
                     <ReactMarkdown>{msg.content}</ReactMarkdown>
                   </div>
                   <div className="text-[10px] text-cerebral-muted mt-1.5 opacity-60">
-                    {new Date(msg.timestamp).toLocaleTimeString('tr-TR', {
-                      hour: '2-digit',
-                      minute: '2-digit',
-                    })}
+                    {new Date(msg.timestamp).toLocaleTimeString(locale === 'tr' ? 'tr-TR' : 'en-US', { hour: '2-digit', minute: '2-digit' })}
                   </div>
                 </div>
               </div>
@@ -154,7 +113,6 @@ export default function ChatInterface({
           </div>
         ))}
 
-        {/* Typing indicator */}
         {isStreaming && (
           <div className="flex items-start gap-3">
             <div className="w-8 h-8 rounded-full bg-cerebral-teal/20 text-cerebral-teal flex items-center justify-center">
@@ -164,9 +122,7 @@ export default function ChatInterface({
               </svg>
             </div>
             <div className="chat-bubble-ai px-4 py-3">
-              <div className="typing-indicator flex gap-1">
-                <span /><span /><span />
-              </div>
+              <div className="typing-indicator flex gap-1"><span /><span /><span /></div>
             </div>
           </div>
         )}
@@ -174,18 +130,14 @@ export default function ChatInterface({
         <div ref={messagesEndRef} />
       </div>
 
-      {/* Input Area */}
+      {/* Input */}
       <div className="p-4 border-t border-cerebral-border bg-cerebral-surface/50">
         <div className="flex items-end gap-3 max-w-4xl mx-auto">
-          {/* Voice toggle */}
           <button
             onClick={() => setIsVoiceMode(!isVoiceMode)}
             className={`p-3 rounded-xl border transition-all duration-200 flex-shrink-0
-              ${isVoiceMode
-                ? 'bg-cerebral-accent/20 border-cerebral-accent text-cerebral-accent'
-                : 'bg-cerebral-card border-cerebral-border text-cerebral-muted hover:text-cerebral-text'
-              }`}
-            title={isVoiceMode ? 'Switch to text' : 'Switch to voice'}
+              ${isVoiceMode ? 'bg-cerebral-accent/20 border-cerebral-accent text-cerebral-accent' : 'bg-cerebral-card border-cerebral-border text-cerebral-muted hover:text-cerebral-text'}`}
+            title={isVoiceMode ? t(locale, 'switchToText') : t(locale, 'switchToVoice')}
           >
             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
@@ -194,20 +146,15 @@ export default function ChatInterface({
           </button>
 
           {isVoiceMode ? (
-            <VoiceInput
-              sessionId={sessionId}
-              onTranscript={handleVoiceTranscript}
-              disabled={isStreaming}
-            />
+            <VoiceInput locale={locale} sessionId={sessionId} onTranscript={sendMessage} disabled={isStreaming} />
           ) : (
             <>
-              <div className="flex-1 relative">
+              <div className="flex-1">
                 <textarea
-                  ref={inputRef}
                   value={input}
-                  onChange={(e) => setInput(e.target.value)}
+                  onChange={e => setInput(e.target.value)}
                   onKeyDown={handleKeyDown}
-                  placeholder="Ask a clinical question..."
+                  placeholder={t(locale, 'chatPlaceholder')}
                   rows={1}
                   className="w-full px-4 py-3 bg-cerebral-card border border-cerebral-border rounded-xl
                              text-cerebral-text placeholder-cerebral-muted/50 resize-none
@@ -216,17 +163,13 @@ export default function ChatInterface({
                   disabled={isStreaming}
                 />
               </div>
-
               <button
                 onClick={() => sendMessage(input)}
                 disabled={isStreaming || !input.trim()}
-                className="p-3 bg-cerebral-accent text-white rounded-xl
-                           hover:bg-cerebral-accent/80 disabled:opacity-50 disabled:cursor-not-allowed
-                           transition-all duration-200 flex-shrink-0"
+                className="p-3 bg-cerebral-accent text-white rounded-xl hover:bg-cerebral-accent/80 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-200 flex-shrink-0"
               >
                 <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                    d="M5 10l7-7m0 0l7 7m-7-7v18" />
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 10l7-7m0 0l7 7m-7-7v18" />
                 </svg>
               </button>
             </>

@@ -12,7 +12,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="tr">
+    <html lang="tr" suppressHydrationWarning>
       <body className="min-h-screen bg-cerebral-bg text-cerebral-text antialiased">
         {children}
       </body>
