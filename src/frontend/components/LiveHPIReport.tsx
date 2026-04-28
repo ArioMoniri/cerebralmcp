@@ -66,7 +66,7 @@ export default function LiveHPIReport({ locale, sessionId, refreshKey, maxTurns 
         if (settleTimerRef.current) clearTimeout(settleTimerRef.current);
         settleTimerRef.current = window.setTimeout(() => {
           setShowDiff(false);
-        }, 6000);
+        }, 2500);
 
         isFirstFetch.current = false;
       })
@@ -204,7 +204,8 @@ function DiffRender({ oldText, newText }: { oldText: string; newText: string }) 
     <div className="whitespace-pre-wrap">
       {parts.map((p, i) => {
         if (p.added) {
-          const delay = `${Math.min(40, staggerIdx++) * 25}ms`;
+          // Tighter stagger so the report fills in faster
+          const delay = `${Math.min(30, staggerIdx++) * 8}ms`;
           return (
             <span
               key={i}

@@ -49,6 +49,15 @@ export default function VoiceInput({
 
   const pausedRef = useRef(false);
   const useWebSpeechRef = useRef(false);
+  // If the browser's Web Speech API hits a 'network' error (common when
+  // Google's STT backend is unreachable from the user's network or region —
+  // e.g. behind firewalls, VPNs, or in regions where Chrome can't reach
+  // google.com STT endpoints), permanently disable it for this session and
+  // route through the backend Deepgram fallback instead.
+  const webSpeechBlockedRef = useRef(false);
+  // Forward reference to startMediaRecorder — declared below, but the
+  // Web Speech error handler needs to invoke it. Updated by an effect.
+  const startMediaRecorderRef = useRef<(() => void) | null>(null);
 
   // Silence-based commit: if interim text hasn't changed for N ms, treat it as final.
   // Web Speech API with continuous:true is inconsistent about firing isFinal, so we
@@ -86,6 +95,9 @@ export default function VoiceInput({
 
   // ── Web Speech API (primary) ─────────────────────────────────────────
   const startWebSpeech = useCallback(() => {
+    // Hard skip if a previous attempt errored with 'network' — the browser's
+    // STT route to Google is blocked, so we use Deepgram via /api/stt instead.
+    if (webSpeechBlockedRef.current) return false;
     const SR: any =
       (typeof window !== 'undefined' && (window as any).SpeechRecognition) ||
       (typeof window !== 'undefined' && (window as any).webkitSpeechRecognition);
@@ -151,7 +163,47 @@ export default function VoiceInput({
         if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
           setError(t(locale, 'micDenied'));
           shouldRestartRef.current = false;
+          return;
         }
+        // 'network' = browser cannot reach Google's STT backend.
+        // 'audio-capture' = mic hardware/access issue but user already granted.
+        // 'service-not-allowed' = enterprise policy blocks STT.
+        // For any of these, permanently disable Web Speech API for this
+        // session and switch to MediaRecorder + Deepgram fallback.
+        if (e.error === 'network' || e.error === 'audio-capture' || e.error === 'aborted') {
+          console.warn('Web Speech unavailable — falling back to Deepgram via /api/stt');
+          webSpeechBlockedRef.current = true;
+          shouldRestartRef.current = false;
+          suppressResultsRef.current = true;
+          // Tear down the current rec instance, then bring up MediaRecorder.
+          try { rec.stop(); } catch {}
+          recognitionRef.current = null;
+          if (streamRef.current) {
+            streamRef.current.getTracks().forEach(t => t.stop());
+            streamRef.current = null;
+          }
+          if (audioCtxRef.current) {
+            audioCtxRef.current.close().catch(() => {});
+            audioCtxRef.current = null;
+          }
+          if (rafRef.current) {
+            cancelAnimationFrame(rafRef.current);
+            rafRef.current = null;
+          }
+          analyserRef.current = null;
+          setIsRecording(false);
+          // Honor the parent's pause/disabled gates before starting fallback.
+          if (!pausedRef.current && !disabled) {
+            useWebSpeechRef.current = false;
+            // Small delay so Chrome fully releases the previous mic stream.
+            setTimeout(() => {
+              if (!pausedRef.current && !disabled) {
+                startMediaRecorderRef.current?.();
+              }
+            }, 200);
+          }
+        }
+        // 'no-speech' is fine — onend will fire and we'll restart cleanly.
       };
 
       rec.onend = () => {
@@ -323,6 +375,13 @@ export default function VoiceInput({
     analyserRef.current = null;
     setIsRecording(false);
   }, []);
+
+  // Keep the forward-reference ref pointed at the latest startMediaRecorder
+  // so the Web Speech error handler can fall through to it without a TDZ
+  // forward-reference error.
+  useEffect(() => {
+    startMediaRecorderRef.current = startMediaRecorder;
+  }, [startMediaRecorder]);
 
   // ── Unified start/stop ───────────────────────────────────────────────
   const start = useCallback(() => {

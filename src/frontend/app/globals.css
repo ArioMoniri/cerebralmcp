@@ -221,7 +221,7 @@ body {
 }
 .hpi-card-glow .hpi-card-border {
   opacity: 1;
-  animation: borderShimmer 2s linear infinite;
+  animation: borderShimmer 1.4s linear infinite;
 }
 
 @keyframes borderShimmer {
@@ -241,7 +241,7 @@ body {
   padding: 0 2px;
   margin: 0 1px;
   box-shadow: 0 0 0 1px rgba(34, 197, 94, 0.15);
-  animation: diffAddIn 0.55s cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation: diffAddIn 0.32s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
 /* Diff deletions — red strikethrough */
@@ -255,7 +255,7 @@ body {
   padding: 0 2px;
   margin: 0 1px;
   opacity: 0.85;
-  animation: diffDelIn 0.4s ease-out both;
+  animation: diffDelIn 0.22s ease-out both;
 }
 
 @keyframes diffAddIn {

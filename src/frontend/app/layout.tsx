@@ -4,6 +4,10 @@ import './globals.css';
 export const metadata: Metadata = {
   title: 'CerebraLink — Medical AI Assistant',
   description: 'Pre-visit patient intake AI assistant for Acıbadem Hospital',
+  icons: {
+    icon: '/favicon.svg',
+    shortcut: '/favicon.svg',
+  },
 };
 
 export default function RootLayout({
