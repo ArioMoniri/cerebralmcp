@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { Locale, t } from '@/lib/i18n';
 import { Message, PatientIdentity, PatientSummary } from '@/lib/types';
-import { apiFetch } from '@/lib/api';
+import { apiFetch, API_BASE } from '@/lib/api';
 
 interface Props {
   locale: Locale;
@@ -49,18 +49,16 @@ export default function CompletionScreen({
     } else if (format === 'markdown') {
       download(content, `${name}.md`, 'text/markdown');
     } else if (format === 'pdf') {
-      import('jspdf').then(({ jsPDF }) => {
-        const doc = new jsPDF();
-        doc.setFontSize(12);
-        const lines = doc.splitTextToSize(content, 170);
-        let y = 20;
-        for (const line of lines) {
-          if (y > 280) { doc.addPage(); y = 20; }
-          doc.text(line, 20, y);
-          y += 6;
-        }
-        doc.save(`${name}.pdf`);
-      });
+      // Server-side PDF generation — uses ReportLab + the bundled Noto Sans
+      // Unicode font so Turkish characters (ş, ğ, ı, ç, ö, ü) render properly
+      // and a real PDF outline is generated from the H1/H2/H3 headings.
+      // jsPDF's default Helvetica/WinAnsi was producing missing-glyph boxes
+      // and a flat (no-bookmark) document — the "disrupted outline" the user
+      // saw came from that combination.
+      const a = document.createElement('a');
+      a.href = `${API_BASE}/api/export/${sessionId}/pdf`;
+      a.download = `${name}.pdf`;
+      a.click();
     } else if (format === 'copy') {
       navigator.clipboard.writeText(content);
     }

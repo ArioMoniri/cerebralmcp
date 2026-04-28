@@ -116,8 +116,9 @@ export default function ChatInterface({
         role: 'assistant', content: data.response, timestamp: new Date().toISOString(),
       }]);
 
-      // Auto-play TTS for the agent's reply (with emotion tags preserved)
-      if (isVoiceMode && data.tts_text) {
+      // Auto-play TTS for the agent's reply UNLESS this is the final report —
+      // the report is for the doctor, not for the patient to listen to.
+      if (isVoiceMode && data.tts_text && !data.is_complete) {
         playTTS(data.tts_text);
       }
 

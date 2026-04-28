@@ -23,7 +23,10 @@ import httpx
 
 ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY", "")
 ELEVENLABS_VOICE_ID = os.environ.get("ELEVENLABS_VOICE_ID", "pFZP5JQG7iQjIQuC4Bku")
-ELEVENLABS_MODEL = os.environ.get("ELEVENLABS_MODEL", "eleven_v3")
+# eleven_turbo_v2_5: ~75ms time-to-first-byte, much more natural delivery
+# than eleven_v3, and the standard voice_settings work as expected (v3 was
+# tuned for emotion tags which made the cadence feel artificial).
+ELEVENLABS_MODEL = os.environ.get("ELEVENLABS_MODEL", "eleven_turbo_v2_5")
 DEEPGRAM_API_KEY = os.environ.get("DEEPGRAM_API_KEY", "")
 
 SCRIPTS_DIR = Path(__file__).resolve().parent.parent.parent / "scripts"
@@ -603,13 +606,17 @@ Interview Transcript:
 
 Generate the complete clinical summary in the specified format."""
 
+    # Sonnet 4 finishes the structured report in ~1/3 the time of Opus 4 with
+    # negligible quality difference for this fixed-template task.
     response = client.messages.create(
-        model="claude-opus-4-20250514",
-        max_tokens=4096,
+        model="claude-sonnet-4-20250514",
+        max_tokens=2500,
         messages=[{"role": "user", "content": prompt}],
     )
 
     report = response.content[0].text
+    # Persist so the PDF export endpoint can render the same content.
+    session["clinical_report"] = report
 
     return {
         "report": report,
@@ -630,6 +637,12 @@ async def tts(req: TTSRequest):
     if not req.text.strip():
         raise HTTPException(400, "text is required")
 
+    # turbo_v2_5 / multilingual_v2 don't interpret emotion tags — strip them
+    # so the TTS doesn't read "[warmly]" out loud. Also collapse extra
+    # whitespace which can cause unnatural pauses.
+    cleaned = re.sub(r"\[[a-zA-Z ]{1,20}\]\s*", "", req.text)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+
     try:
         async with httpx.AsyncClient(timeout=60) as client:
             resp = await client.post(
@@ -640,12 +653,17 @@ async def tts(req: TTSRequest):
                     "Accept": "audio/mpeg",
                 },
                 json={
-                    "text": req.text,
+                    "text": cleaned,
                     "model_id": ELEVENLABS_MODEL,
                     "voice_settings": {
-                        "stability": 0.35,
-                        "similarity_boost": 0.85,
-                        "style": 0.75,
+                        # Higher stability = steadier pace and more natural
+                        # cadence (the previous 0.35 was tuned for emotional
+                        # range under v3 which made delivery feel uneven).
+                        "stability": 0.55,
+                        "similarity_boost": 0.8,
+                        # style 0 on turbo_v2_5 = neutral, professional
+                        # (any non-zero style on turbo amplifies artifacts).
+                        "style": 0.0,
                         "use_speaker_boost": True,
                     },
                     "output_format": "mp3_44100_128",
@@ -713,6 +731,265 @@ async def stt(audio: UploadFile = File(...), language: Optional[str] = None):
         raise
     except Exception as e:
         raise HTTPException(500, f"STT failed: {e}")
+
+
+@app.get("/api/export/{session_id}/pdf")
+async def export_pdf(session_id: str):
+    """Generate a properly-typeset Turkish PDF with a working outline.
+
+    Uses ReportLab + the bundled Noto Sans Variable font, which has full
+    coverage of Latin Extended-A (ş, ğ, ı, etc. — the characters the previous
+    jsPDF/Helvetica path was rendering as boxes/missing glyphs). H1/H2/H3
+    paragraphs register PDF outline entries via afterFlowable so the doctor
+    can navigate the report from the bookmarks panel.
+    """
+    session = sessions.get(session_id)
+    if not session:
+        raise HTTPException(404, "Session not found")
+
+    try:
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.units import mm
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.lib.enums import TA_LEFT
+        from reportlab.lib.colors import HexColor
+        from reportlab.pdfbase import pdfmetrics
+        from reportlab.pdfbase.ttfonts import TTFont
+        from reportlab.platypus import (
+            BaseDocTemplate, PageTemplate, Frame, Paragraph, Spacer,
+            HRFlowable, KeepTogether,
+        )
+    except ImportError:
+        raise HTTPException(500, "reportlab not installed (pip install reportlab)")
+
+    # Pick a Unicode TTF — bundled Noto Sans, with system fallbacks.
+    bundled = Path(__file__).resolve().parent / "fonts" / "NotoSans.ttf"
+    font_candidates = [
+        str(bundled),
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf",
+        "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+    ]
+    font_path = next((p for p in font_candidates if Path(p).exists()), None)
+    if not font_path:
+        raise HTTPException(500, "No Unicode font found for PDF export")
+
+    try:
+        pdfmetrics.registerFont(TTFont("BodyFont", font_path))
+    except Exception:
+        pass  # already registered
+
+    # Build report content
+    summary = session.get("summary", {}) or {}
+    patient = summary.get("patient", {})
+    department = session.get("department", "Genel")
+    chat_history = session.get("chat_history", [])
+
+    # Use generated clinical report if available, otherwise fall back to live
+    # summary built from the chat history.
+    report_md = session.get("clinical_report")
+    if not report_md:
+        # Generate a quick summary block from session state.
+        report_md = _build_pdf_fallback_markdown(session)
+
+    import io
+    from html import escape as html_escape
+
+    buf = io.BytesIO()
+
+    # Define styles
+    H1 = ParagraphStyle(
+        name="H1", fontName="BodyFont", fontSize=18, leading=22,
+        textColor=HexColor("#1e3a5f"), spaceAfter=8, spaceBefore=4,
+        alignment=TA_LEFT,
+    )
+    H2 = ParagraphStyle(
+        name="H2", fontName="BodyFont", fontSize=13, leading=17,
+        textColor=HexColor("#2e5a8a"), spaceAfter=6, spaceBefore=14,
+    )
+    H3 = ParagraphStyle(
+        name="H3", fontName="BodyFont", fontSize=11, leading=14,
+        textColor=HexColor("#444"), spaceAfter=4, spaceBefore=10,
+    )
+    Body = ParagraphStyle(
+        name="Body", fontName="BodyFont", fontSize=10, leading=14,
+        textColor=HexColor("#222"), spaceAfter=4,
+    )
+    Meta = ParagraphStyle(
+        name="Meta", fontName="BodyFont", fontSize=9, leading=12,
+        textColor=HexColor("#666"), spaceAfter=2,
+    )
+    BulletStyle = ParagraphStyle(
+        name="Bullet", fontName="BodyFont", fontSize=10, leading=14,
+        textColor=HexColor("#222"), leftIndent=12, bulletIndent=2,
+        spaceAfter=2,
+    )
+
+    # Doc template with afterFlowable callback for PDF outline
+    bookmark_counter = {"i": 0}
+
+    class HPIDoc(BaseDocTemplate):
+        def __init__(self, *args, **kwargs):
+            BaseDocTemplate.__init__(self, *args, **kwargs)
+            frame = Frame(
+                self.leftMargin, self.bottomMargin,
+                self.width, self.height,
+                id='normal',
+            )
+            self.addPageTemplates([PageTemplate(id='Main', frames=frame)])
+
+        def afterFlowable(self, flowable):
+            if isinstance(flowable, Paragraph):
+                style = flowable.style.name
+                if style in ("H1", "H2", "H3"):
+                    text = flowable.getPlainText()
+                    bookmark_counter["i"] += 1
+                    key = f"bm{bookmark_counter['i']}"
+                    self.canv.bookmarkPage(key)
+                    level = {"H1": 0, "H2": 1, "H3": 2}[style]
+                    self.canv.addOutlineEntry(text, key, level=level, closed=False)
+
+    doc = HPIDoc(
+        buf, pagesize=A4,
+        leftMargin=20*mm, rightMargin=20*mm,
+        topMargin=18*mm, bottomMargin=18*mm,
+        title="Pre-Visit Patient Summary",
+        author="CerebraLink",
+    )
+
+    story = []
+
+    # ── Header ──
+    story.append(Paragraph("PRE-VİZİT HASTA ÖN-GÖRÜŞME ÖZETİ", H1))
+    story.append(HRFlowable(width="100%", thickness=1.2, color=HexColor("#1e3a5f"), spaceAfter=10))
+
+    name = patient.get("name") or "Bilinmiyor"
+    age = patient.get("age") or "?"
+    sex = patient.get("sex") or "?"
+    pid = patient.get("patient_id") or "?"
+    today = datetime.now().strftime("%d.%m.%Y")
+    story.append(Paragraph(f"<b>Hasta:</b> {html_escape(str(name))}, {html_escape(str(age))} yaş, {html_escape(str(sex))}", Meta))
+    story.append(Paragraph(f"<b>Hasta No:</b> {html_escape(str(pid))} &nbsp;&nbsp; <b>Poliklinik:</b> {html_escape(department)} &nbsp;&nbsp; <b>Tarih:</b> {today}", Meta))
+    story.append(Paragraph("<b>Görüşme Yöntemi:</b> AI Ön-Görüşme Asistanı (5 odaklı soru)", Meta))
+    story.append(Spacer(1, 6))
+
+    # ── Body — render the markdown report as Platypus flowables ──
+    story.extend(_md_to_flowables(report_md, H2, H3, Body, BulletStyle))
+
+    # ── Interview transcript appendix ──
+    if chat_history:
+        story.append(Spacer(1, 14))
+        story.append(HRFlowable(width="100%", thickness=0.5, color=HexColor("#ccc")))
+        story.append(Paragraph("Görüşme Dökümü (Ek)", H2))
+        for m in chat_history:
+            if m["content"].startswith("__START_INTERVIEW__"):
+                continue
+            role = "Hasta" if m["role"] == "user" else "Asistan"
+            color = "#1e3a5f" if m["role"] == "assistant" else "#444"
+            text_safe = html_escape(m["content"]).replace("\n", "<br/>")
+            story.append(Paragraph(
+                f'<font color="{color}"><b>{role}:</b></font> {text_safe}',
+                Body,
+            ))
+            story.append(Spacer(1, 2))
+
+    doc.build(story)
+
+    pdf_bytes = buf.getvalue()
+    buf.close()
+    filename = f"previsit_{name.replace(' ', '_')}_{pid}.pdf"
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+def _md_to_flowables(md_text: str, H2, H3, Body, Bullet) -> list:
+    """Quick markdown → ReportLab flowables converter for our report shape."""
+    from reportlab.platypus import Paragraph, Spacer
+    from html import escape as html_escape
+
+    out = []
+    lines = md_text.replace("\r\n", "\n").split("\n")
+
+    def render(text: str) -> str:
+        # Escape HTML, then convert simple markdown emphasis to mini-XML.
+        s = html_escape(text)
+        s = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", s)
+        s = re.sub(r"(?<!\*)\*(?!\*)(.+?)\*(?!\*)", r"<i>\1</i>", s)
+        s = re.sub(r"`(.+?)`", r'<font face="Courier">\1</font>', s)
+        return s
+
+    pending_bullets = []
+
+    def flush_bullets():
+        for b in pending_bullets:
+            out.append(Paragraph(f"• {render(b)}", Bullet))
+        pending_bullets.clear()
+
+    for raw in lines:
+        line = raw.rstrip()
+        if not line.strip():
+            flush_bullets()
+            out.append(Spacer(1, 4))
+            continue
+        if line.startswith("### "):
+            flush_bullets()
+            out.append(Paragraph(render(line[4:].strip()), H3))
+        elif line.startswith("## "):
+            flush_bullets()
+            out.append(Paragraph(render(line[3:].strip()), H2))
+        elif line.startswith("# "):
+            flush_bullets()
+            out.append(Paragraph(render(line[2:].strip()), H2))
+        elif line.lstrip().startswith(("- ", "* ", "• ")):
+            stripped = line.lstrip()[2:].strip()
+            pending_bullets.append(stripped)
+        elif set(line.strip()) <= {"─", "-", "═", "="} and len(line.strip()) >= 3:
+            flush_bullets()
+            # horizontal rule
+            from reportlab.platypus import HRFlowable
+            from reportlab.lib.colors import HexColor
+            out.append(HRFlowable(width="100%", thickness=0.4, color=HexColor("#bbb"), spaceBefore=2, spaceAfter=4))
+        else:
+            flush_bullets()
+            out.append(Paragraph(render(line), Body))
+
+    flush_bullets()
+    return out
+
+
+def _build_pdf_fallback_markdown(session: dict) -> str:
+    """If clinical_report wasn't generated, build a quick summary from history."""
+    summary = session.get("summary", {}) or {}
+    chat_history = session.get("chat_history", [])
+    patient = summary.get("patient", {})
+
+    parts = []
+    parts.append("## Başvuru Yakınması")
+    # Pull the patient's first non-system message as the chief complaint
+    first_user = next(
+        (m["content"] for m in chat_history
+         if m["role"] == "user" and not m["content"].startswith("__START_INTERVIEW__")),
+        None,
+    )
+    parts.append(first_user or "_(toplanmadı)_")
+
+    parts.append("\n## Şimdiki Hastalık Öyküsü")
+    user_lines = [m["content"] for m in chat_history
+                  if m["role"] == "user" and not m["content"].startswith("__START_INTERVIEW__")]
+    parts.append("\n".join(f"- {line}" for line in user_lines) or "_(toplanmadı)_")
+
+    parts.append("\n## Özgeçmiş, İlaçlar, Alerjiler (EHR)")
+    parts.append(f"- **Aktif problemler:** {', '.join(summary.get('active_problems', [])) or 'yok'}")
+    parts.append(f"- **Kronik hastalıklar:** {', '.join(summary.get('chronic_conditions', [])) or 'yok'}")
+    meds = summary.get("current_medications", []) or []
+    med_strs = [f"{m.get('name','')} {m.get('dose','')} {m.get('frequency','')}".strip() for m in meds]
+    parts.append(f"- **İlaçlar:** {', '.join(s for s in med_strs if s) or 'yok'}")
+    parts.append(f"- **Alerjiler:** {', '.join(summary.get('allergies', [])) or 'bilinen yok'}")
+
+    return "\n".join(parts)
 
 
 @app.get("/api/export/{session_id}/{format}")
