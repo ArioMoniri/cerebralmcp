@@ -150,3 +150,26 @@ body {
            transition-all duration-200;
   }
 }
+
+/* Live HPI report — diff styling matches the editorial mark-up reference */
+.hpi-report h3 {
+  font-size: 0.95rem;
+  font-weight: 700;
+  margin-top: 1rem;
+  margin-bottom: 0.4rem;
+  color: rgb(229 231 235);
+}
+.hpi-report p {
+  margin: 0.4rem 0;
+}
+.hpi-report ul {
+  margin: 0.4rem 0;
+  padding-left: 1.1rem;
+}
+.hpi-report li {
+  margin: 0.15rem 0;
+}
+.hpi-report em {
+  color: rgb(156 163 175);
+  font-style: italic;
+}

@@ -15,10 +15,12 @@ interface ChatInterfaceProps {
   setChatHistory: React.Dispatch<React.SetStateAction<Message[]>>;
   onInterviewComplete: () => void;
   onSummaryUpdate?: (summary: PatientSummary) => void;
+  /** Bumped after each chat turn so LiveHPIReport refetches the draft. */
+  onTurnComplete?: () => void;
 }
 
 export default function ChatInterface({
-  locale, sessionId, patientName, chatHistory, setChatHistory, onInterviewComplete, onSummaryUpdate,
+  locale, sessionId, patientName, chatHistory, setChatHistory, onInterviewComplete, onSummaryUpdate, onTurnComplete,
 }: ChatInterfaceProps) {
   const [input, setInput] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
@@ -130,6 +132,12 @@ export default function ChatInterface({
             if (payload?.summary) onSummaryUpdate(payload.summary);
           })
           .catch(() => { /* silent — summary refresh is best-effort */ });
+      }
+
+      // Bump the LiveHPIReport refresh key — it will refetch the live HPI
+      // draft and animate the diff against the previous version.
+      if (onTurnComplete && !isSystemStart) {
+        onTurnComplete();
       }
     } catch {
       setChatHistory(prev => [...prev, {

@@ -8,6 +8,7 @@ import PatientIngest from '@/components/PatientIngest';
 import ChatInterface from '@/components/ChatInterface';
 import PatientSummaryPanel from '@/components/PatientSummaryPanel';
 import InterviewProgress from '@/components/InterviewProgress';
+import LiveHPIReport from '@/components/LiveHPIReport';
 import CompletionScreen from '@/components/CompletionScreen';
 
 export default function Home() {
@@ -21,6 +22,7 @@ export default function Home() {
   const [interviewComplete, setInterviewComplete] = useState(false);
   const [department, setDepartment] = useState('Kardiyoloji');
   const [clinicalReport, setClinicalReport] = useState<string | null>(null);
+  const [hpiRefreshKey, setHpiRefreshKey] = useState(0);
 
   const handleIdentitySubmit = useCallback((id: PatientIdentity) => {
     setIdentity(id);
@@ -105,10 +107,17 @@ export default function Home() {
                 setChatHistory={setChatHistory}
                 onInterviewComplete={handleInterviewComplete}
                 onSummaryUpdate={setPatientSummary}
+                onTurnComplete={() => setHpiRefreshKey(k => k + 1)}
               />
             </div>
 
-            <div className="w-[420px] border-l border-cerebral-border flex flex-col overflow-y-auto">
+            <div className="w-[460px] border-l border-cerebral-border flex flex-col overflow-y-auto">
+              <LiveHPIReport
+                locale={locale}
+                sessionId={sessionId}
+                refreshKey={hpiRefreshKey}
+                maxTurns={5}
+              />
               <InterviewProgress
                 locale={locale}
                 chatHistory={chatHistory}
