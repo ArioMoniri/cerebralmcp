@@ -111,7 +111,14 @@ export default function Home() {
               />
             </div>
 
-            <div className="w-[460px] border-l border-cerebral-border flex flex-col overflow-y-auto">
+            {/*
+              Right rail: must scroll independently of the chat. The flex
+              parent needs min-h-0 so its overflow-y-auto child can actually
+              scroll inside the viewport, otherwise tall content (long HPI
+              report + interview progress + patient summary) silently grows
+              past the screen with no scrollbar.
+            */}
+            <div className="w-[460px] border-l border-cerebral-border flex flex-col min-h-0 overflow-y-auto custom-scroll">
               <LiveHPIReport
                 locale={locale}
                 sessionId={sessionId}

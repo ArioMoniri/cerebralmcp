@@ -64,7 +64,10 @@ export default function VoiceInput({
   // force-commit pending interim after a short silence.
   const interimBufferRef = useRef('');
   const commitTimerRef = useRef<number | null>(null);
-  const SILENCE_COMMIT_MS = 1200;
+  // Patients pause to think mid-sentence. 1.2s was cutting them off after
+  // the first phrase. 2.2s gives space for a natural pause without making
+  // the conversation feel laggy when they actually finish.
+  const SILENCE_COMMIT_MS = 2200;
 
   // continuous:true keeps every result (interim + final) in event.results FOREVER,
   // so subsequent onresult events contain already-committed text. We track what we
@@ -339,7 +342,9 @@ export default function VoiceInput({
       analyserRef.current = analyser;
       const data = new Uint8Array(analyser.frequencyBinCount);
       const SPEECH_THRESHOLD = 18;
-      const SILENCE_MS = 1200;
+      // Match the Web Speech path — 2.2s lets the patient pause mid-thought
+      // without committing a partial answer.
+      const SILENCE_MS = 2200;
       const tick = () => {
         if (!analyserRef.current) return;
         analyserRef.current.getByteFrequencyData(data);
