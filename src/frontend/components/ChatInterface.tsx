@@ -77,16 +77,19 @@ export default function ChatInterface({
     };
   }, []);
 
-  // Auto-start interview in the browser's language
+  // Auto-start interview — ALWAYS Turkish per spec. Guarded against double-fire
+  // from React StrictMode (dev mode unmount/remount cycle) using sessionStorage
+  // keyed on the actual session id, so the welcome message can never appear twice.
   useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const startKey = `cerebra-started-${sessionId}`;
+    if (sessionStorage.getItem(startKey)) return;
     if (chatHistory.length === 0) {
-      const browserLang = typeof navigator !== 'undefined'
-        ? (navigator.language || 'tr').toLowerCase()
-        : 'tr';
-      // Use BCP-47 tag (e.g. "tr-TR", "en-US", "de-DE", "fr-FR")
-      sendMessage(`__START_INTERVIEW__:${browserLang}`);
+      sessionStorage.setItem(startKey, '1');
+      sendMessage('__START_INTERVIEW__:tr-TR');
     }
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId]);
 
   const sendMessage = async (text: string) => {
     if (!text.trim() || isStreaming) return;

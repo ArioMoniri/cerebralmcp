@@ -91,40 +91,97 @@ export default function LiveHPIReport({ locale, sessionId, refreshKey, maxTurns 
 
   return (
     <div className="p-4 border-b border-cerebral-border">
-      <div className="glass-card p-4">
-        <div className="flex items-center justify-between mb-3">
-          <h3 className="text-sm font-semibold text-cerebral-text flex items-center gap-2">
-            <span className="inline-block w-2 h-2 rounded-full bg-cerebral-teal animate-pulse" />
-            {heading}
-          </h3>
-          <div className="flex items-center gap-2 text-xs">
-            {isLoading && <span className="text-cerebral-muted">{updatingLabel}</span>}
-            <span className="px-2 py-0.5 rounded-full bg-cerebral-accent/10 text-cerebral-accent border border-cerebral-accent/20">
-              {turnLabel} {turnCount} / {maxTurns}
+      <div
+        className={`hpi-card relative rounded-2xl p-5 overflow-hidden transition-all duration-500
+          ${isLoading || showDiff ? 'hpi-card-glow' : ''}`}
+      >
+        {/* Animated gradient border on update */}
+        <div className="hpi-card-border" aria-hidden />
+
+        <div className="relative">
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center gap-2.5">
+              <span className="relative flex h-2.5 w-2.5">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-cerebral-teal opacity-60" />
+                <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-cerebral-teal" />
+              </span>
+              <h3 className="text-sm font-semibold tracking-wide text-cerebral-text">
+                {heading}
+              </h3>
+            </div>
+            <div className="flex items-center gap-2 text-xs">
+              {isLoading && (
+                <span className="text-cerebral-muted flex items-center gap-1.5">
+                  <span className="w-1 h-1 rounded-full bg-cerebral-teal animate-pulse" />
+                  {updatingLabel}
+                </span>
+              )}
+            </div>
+          </div>
+
+          {/* 5-dot turn indicator — fills as the patient progresses */}
+          <div className="flex items-center justify-between mb-4 px-1">
+            <div className="flex items-center gap-1.5 flex-1">
+              {Array.from({ length: maxTurns }).map((_, i) => {
+                const completed = i < turnCount;
+                const active = i === turnCount && turnCount < maxTurns;
+                return (
+                  <div key={i} className="flex items-center flex-1 last:flex-initial">
+                    <div
+                      className={`relative w-7 h-7 rounded-full flex items-center justify-center text-[10px] font-semibold transition-all duration-500
+                        ${completed
+                          ? 'bg-gradient-to-br from-cerebral-accent to-cerebral-teal text-white shadow-lg shadow-cerebral-accent/30'
+                          : active
+                            ? 'bg-cerebral-accent/20 text-cerebral-accent border-2 border-cerebral-accent animate-pulse'
+                            : 'bg-cerebral-bg text-cerebral-muted border border-cerebral-border'}`}
+                    >
+                      {completed ? (
+                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+                        </svg>
+                      ) : (
+                        i + 1
+                      )}
+                    </div>
+                    {i < maxTurns - 1 && (
+                      <div
+                        className={`flex-1 h-[2px] mx-1 rounded transition-all duration-700
+                          ${i < turnCount - 1
+                            ? 'bg-gradient-to-r from-cerebral-accent to-cerebral-teal'
+                            : 'bg-cerebral-border'}`}
+                      />
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+            <span className="ml-3 px-2.5 py-1 rounded-full bg-cerebral-accent/10 text-cerebral-accent border border-cerebral-accent/30 text-[11px] font-semibold">
+              {turnLabel} {turnCount}/{maxTurns}
             </span>
           </div>
-        </div>
 
-        <div className="w-full h-1 bg-cerebral-bg rounded-full mb-4 overflow-hidden">
-          <div
-            className="h-full bg-gradient-to-r from-cerebral-accent to-cerebral-teal rounded-full transition-all duration-700"
-            style={{ width: `${Math.min(100, (turnCount / maxTurns) * 100)}%` }}
-          />
+          {!currentReport ? (
+            <div className="flex flex-col items-center gap-3 py-8 text-center">
+              <div className="w-12 h-12 rounded-full bg-cerebral-accent/10 flex items-center justify-center">
+                <svg className="w-6 h-6 text-cerebral-accent/60" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+                    d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                </svg>
+              </div>
+              <div className="text-xs text-cerebral-muted italic max-w-[260px]">
+                {waitingLabel}
+              </div>
+            </div>
+          ) : (
+            <div className="text-sm leading-relaxed prose prose-invert prose-sm max-w-none hpi-report relative">
+              {showDiff && previousReport ? (
+                <DiffRender oldText={previousReport} newText={currentReport} />
+              ) : (
+                <ReactMarkdown>{currentReport}</ReactMarkdown>
+              )}
+            </div>
+          )}
         </div>
-
-        {!currentReport ? (
-          <div className="text-xs text-cerebral-muted italic py-6 text-center">
-            {waitingLabel}
-          </div>
-        ) : (
-          <div className="text-sm leading-relaxed prose prose-invert prose-sm max-w-none hpi-report">
-            {showDiff && previousReport ? (
-              <DiffRender oldText={previousReport} newText={currentReport} />
-            ) : (
-              <ReactMarkdown>{currentReport}</ReactMarkdown>
-            )}
-          </div>
-        )}
       </div>
     </div>
   );
@@ -136,23 +193,23 @@ export default function LiveHPIReport({ locale, sessionId, refreshKey, maxTurns 
  * The added/removed runs are styled in globals.css under .hpi-report.
  */
 function DiffRender({ oldText, newText }: { oldText: string; newText: string }) {
-  // Word-level diff with intra-word fallback so punctuation and newlines
-  // are preserved. The `diff` package returns a list of {value, added,
-  // removed} parts in document order.
+  // Word-level diff with intra-word fallback so punctuation and newlines are
+  // preserved. The `diff` package returns parts in document order.
   const parts = diffWords(oldText, newText);
 
-  // Convert each part into raw markdown wrapped in HTML-ish span markers,
-  // then run the assembled string through ReactMarkdown with rehype-raw.
-  // Simpler approach: emit React nodes directly, but split on newlines so
-  // blank lines still produce paragraph breaks visually.
+  // Render each part with a staggered fade-in so the editorial mark-up feels
+  // like the report is being typed/edited live rather than appearing all at once.
+  let staggerIdx = 0;
   return (
     <div className="whitespace-pre-wrap">
       {parts.map((p, i) => {
         if (p.added) {
+          const delay = `${Math.min(40, staggerIdx++) * 25}ms`;
           return (
             <span
               key={i}
-              className="text-emerald-400 bg-emerald-500/10 rounded px-0.5"
+              className="hpi-diff-add"
+              style={{ animationDelay: delay }}
             >
               {p.value}
             </span>
@@ -160,10 +217,7 @@ function DiffRender({ oldText, newText }: { oldText: string; newText: string }) 
         }
         if (p.removed) {
           return (
-            <span
-              key={i}
-              className="text-red-400 line-through bg-red-500/10 rounded px-0.5"
-            >
+            <span key={i} className="hpi-diff-del">
               {p.value}
             </span>
           );

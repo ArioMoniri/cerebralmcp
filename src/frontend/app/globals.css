@@ -173,3 +173,131 @@ body {
   color: rgb(156 163 175);
   font-style: italic;
 }
+
+/* ─────────────────────────────────────────────────────────────────────
+   LiveHPIReport — premium editorial card with animated diff highlights
+   ───────────────────────────────────────────────────────────────────── */
+.hpi-card {
+  background: linear-gradient(
+    180deg,
+    rgba(30, 41, 59, 0.6) 0%,
+    rgba(15, 23, 42, 0.6) 100%
+  );
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(99, 102, 241, 0.18);
+  box-shadow:
+    0 4px 24px -8px rgba(0, 0, 0, 0.4),
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.04);
+}
+
+.hpi-card-glow {
+  border-color: rgba(56, 189, 248, 0.5);
+  box-shadow:
+    0 0 0 1px rgba(56, 189, 248, 0.2),
+    0 8px 32px -4px rgba(56, 189, 248, 0.25),
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.06);
+}
+
+.hpi-card-border {
+  position: absolute;
+  inset: 0;
+  border-radius: 1rem;
+  padding: 1px;
+  background: linear-gradient(
+    135deg,
+    rgba(99, 102, 241, 0) 0%,
+    rgba(56, 189, 248, 0.4) 50%,
+    rgba(34, 197, 94, 0) 100%
+  );
+  -webkit-mask:
+    linear-gradient(#fff 0 0) content-box,
+    linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+          mask-composite: exclude;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.6s ease;
+}
+.hpi-card-glow .hpi-card-border {
+  opacity: 1;
+  animation: borderShimmer 2s linear infinite;
+}
+
+@keyframes borderShimmer {
+  0%   { background-position: 0% 0%; }
+  100% { background-position: 200% 0%; }
+}
+
+/* Diff additions — green highlight that fades in */
+.hpi-diff-add {
+  color: rgb(74 222 128);
+  background: linear-gradient(
+    180deg,
+    rgba(34, 197, 94, 0.08) 0%,
+    rgba(34, 197, 94, 0.18) 100%
+  );
+  border-radius: 3px;
+  padding: 0 2px;
+  margin: 0 1px;
+  box-shadow: 0 0 0 1px rgba(34, 197, 94, 0.15);
+  animation: diffAddIn 0.55s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+/* Diff deletions — red strikethrough */
+.hpi-diff-del {
+  color: rgb(248 113 113);
+  background: rgba(239, 68, 68, 0.1);
+  text-decoration: line-through;
+  text-decoration-thickness: 1.5px;
+  text-decoration-color: rgba(248, 113, 113, 0.8);
+  border-radius: 3px;
+  padding: 0 2px;
+  margin: 0 1px;
+  opacity: 0.85;
+  animation: diffDelIn 0.4s ease-out both;
+}
+
+@keyframes diffAddIn {
+  0% {
+    background-color: rgba(34, 197, 94, 0.55);
+    color: rgb(187 247 208);
+    transform: translateY(2px);
+    opacity: 0;
+  }
+  60% {
+    background-color: rgba(34, 197, 94, 0.35);
+    color: rgb(134 239 172);
+    transform: translateY(0);
+    opacity: 1;
+  }
+  100% {
+    background-color: rgba(34, 197, 94, 0.12);
+    color: rgb(74 222 128);
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+@keyframes diffDelIn {
+  0% { opacity: 0; transform: scaleY(1.1); }
+  100% { opacity: 0.85; transform: scaleY(1); }
+}
+
+/* Refined chat-bubble polish */
+.chat-bubble-user, .chat-bubble-ai {
+  border-radius: 1rem;
+  transition: transform 0.18s ease, box-shadow 0.18s ease;
+}
+.chat-bubble-user:hover, .chat-bubble-ai:hover {
+  box-shadow: 0 4px 16px -4px rgba(0, 0, 0, 0.3);
+}
+
+/* Smoother global fade-in */
+.fade-in {
+  animation: fadeInUp 0.4s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+@keyframes fadeInUp {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}

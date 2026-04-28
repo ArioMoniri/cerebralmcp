@@ -241,14 +241,30 @@ async def chat(msg: ChatMessage):
 
     client = anthropic.Anthropic()
 
-    # Handle synthetic interview-start signal from the frontend
-    # Format: "__START_INTERVIEW__:<browser-locale>"
-    is_start = msg.message.startswith("__START_INTERVIEW__:")
-    if is_start:
-        locale_tag = msg.message.split(":", 1)[1].strip() or "tr-TR"
-        session["initial_language"] = locale_tag
+    # Synthetic interview-start signal from the frontend. Per spec, the
+    # patient-facing language is ALWAYS Turkish — we ignore any locale tag.
+    is_start = msg.message.startswith("__START_INTERVIEW__")
 
-    # Build the interview system prompt (includes initial language if set)
+    # IDEMPOTENCY: if the start signal arrives twice (React StrictMode dev
+    # double-fire, navigation back/forward, etc.), return the existing first
+    # assistant turn rather than generating a new greeting. Without this the
+    # patient sees the welcome message duplicated.
+    if is_start and session.get("chat_history"):
+        first_assistant = next(
+            (m for m in session["chat_history"] if m["role"] == "assistant"),
+            None,
+        )
+        if first_assistant:
+            display_text = re.sub(r"\[[a-zA-Z ]{1,20}\]\s*", "", first_assistant["content"]).strip()
+            return {
+                "response": display_text,
+                "tts_text": first_assistant["content"],
+                "is_complete": False,
+                "messages_count": len(session["chat_history"]),
+                "duplicate_start": True,
+            }
+
+    # Build the interview system prompt
     system_prompt = _build_interview_system_prompt(session)
 
     # Add user message to history (skip the synthetic start marker)
@@ -259,12 +275,21 @@ async def chat(msg: ChatMessage):
             "timestamp": datetime.now().isoformat(),
         })
 
-    # Build messages for Claude. If this is the start, seed with a neutral
-    # user turn instructing the agent to greet in the initial language.
+    # Build messages for Claude. On start, seed with a Turkish-only greeting
+    # instruction. The system prompt already pins all patient-facing output
+    # to Turkish, but we reinforce it here so the very first turn is locked.
     if is_start:
+        patient_name = session.get("summary", {}).get("patient", {}).get("name", "")
         messages = [{
             "role": "user",
-            "content": f"[SYSTEM] Please greet the patient warmly and begin the pre-visit interview. The patient's browser language is '{session.get('initial_language', 'tr-TR')}', so use that language for your opening. Introduce yourself briefly, confirm their name ({session.get('summary', {}).get('patient', {}).get('name', '')}), and ask the reason for today's visit.",
+            "content": (
+                "[SİSTEM] Lütfen Türkçe olarak hastayı sıcak bir şekilde karşıla ve "
+                "ön-görüşmeyi başlat. Sadece Tek bir mesaj yaz: kısa kendini tanıt "
+                "(yapay zeka ön-görüşme asistanı, doktora iletmek için bilgi topluyorsun, "
+                f"tanı koymuyorsun), hastanın adını ({patient_name}) kullan, ve açık uçlu "
+                "olarak bugünkü şikayetini sor. Bu Tur 1 — sadece tek bir soru, "
+                "çok parçalı OLMASIN. Tüm yanıt Türkçe olmalı."
+            ),
         }]
     else:
         messages = [{"role": m["role"], "content": m["content"]} for m in session["chat_history"]]
@@ -758,7 +783,6 @@ def _build_interview_system_prompt(session: dict) -> str:
     summary = session.get("summary", {})
     department = session.get("department", "Genel")
     patient = summary.get("patient", {})
-    initial_language = session.get("initial_language", "tr-TR")
     hospital_name = "Acıbadem Ataşehir Hastanesi"
 
     # Count user turns so far (excluding the synthetic start marker)
@@ -800,7 +824,7 @@ HARD CONSTRAINTS — VIOLATE NONE
 • Turns 2-5 are dynamically selected from the HPI priority hierarchy based on which dimensions remain unfilled.
 • After Turn 5, immediately generate the clinical summary using the OUTPUT FORMAT below.
 
-CURRENT TURN STATE: The patient has answered {user_turn_count} question(s) so far. {turns_remaining} HPI question turn(s) remaining before you must produce the final summary. {("This is Turn 1 — give the opening introduction." if user_turn_count == 0 else f"This is Turn {user_turn_count + 1}." if turns_remaining > 0 else "TURN BUDGET EXHAUSTED — generate the PRE-VİZİT HASTA ÖN-GÖRÜŞME ÖZETİ now.")}
+CURRENT TURN STATE: The patient has answered {user_turn_count} question(s) so far. {turns_remaining} HPI question turn(s) remaining before you must produce the final summary. {("This is Turn 1 — give the opening introduction in Turkish." if user_turn_count == 0 else f"This is Turn {user_turn_count + 1} — ask exactly ONE Turkish HPI-deepening question." if turns_remaining > 0 else "TURN BUDGET EXHAUSTED — generate the PRE-VİZİT HASTA ÖN-GÖRÜŞME ÖZETİ now in Turkish.")}
 
 ═══════════════════════════════════════════════════════
 EHR CONTEXT (silent — never re-ask, address patient by name)
@@ -851,12 +875,13 @@ Reference patterns (generalize via clinical reasoning):
 • OB/GYN — menstrual/pelvic: LMP, cycle pattern, bleeding amount, dyspareunia, urinary symptoms; pregnancy possibility ALWAYS confirmed (LMP-missing → displaces one HPI turn)
 
 ═══════════════════════════════════════════════════════
-TURN 1 — Self-introduction + open chief-complaint invitation (ONE message)
+TURN 1 — Self-introduction + open chief-complaint invitation (ONE message, TURKISH)
 ═══════════════════════════════════════════════════════
-Combine in ONE patient-facing message in the language matching {initial_language}:
-  (1) Brief self-introduction: AI assistant, information shared with treating doctor, no diagnosis or treatment
-  (2) Open-ended invitation
-Example (Turkish): "Merhaba [Ad Soyad] Bey/Hanım, ben {hospital_name} {department} polikliniğinin yapay zeka ön-görüşme asistanıyım. Doktorunuzla buluşmadan önce bugünkü şikayetinizi biraz daha detaylı anlamak istiyorum — topladığım bilgiler doğrudan doktorunuza iletilecek. Tanı koymam veya tedavi önermem; sadece sizi dinleyeceğim. Sizi en çok rahatsız eden durumu kendi cümlelerinizle anlatır mısınız?"
+Combine in ONE patient-facing Turkish message:
+  (1) Brief self-introduction: yapay zeka ön-görüşme asistanı, bilgi doktora iletilecek, tanı/tedavi önerisi yok
+  (2) Open-ended chief-complaint invitation
+Use this EXACT pattern (substitute the patient's actual name from EHR):
+"Merhaba [Ad Soyad] Bey/Hanım, ben {hospital_name} {department} polikliniğinin yapay zeka ön-görüşme asistanıyım. Doktorunuzla buluşmadan önce bugünkü şikayetinizi biraz daha detaylı anlamak istiyorum — topladığım bilgiler doğrudan doktorunuza iletilecek. Tanı koymam veya tedavi önermem; sadece sizi dinleyeceğim. Sizi en çok rahatsız eden durumu kendi cümlelerinizle anlatır mısınız?"
 
 ═══════════════════════════════════════════════════════
 TURNS 2-5 — Dynamic HPI deepening (one question each)
@@ -870,11 +895,13 @@ OVERRIDE CONDITIONS (legitimate exits from 5-turn rule):
 • Verification mirror-back → does NOT count as a turn.
 
 ═══════════════════════════════════════════════════════
-LANGUAGE POLICY
+LANGUAGE POLICY — ABSOLUTE
 ═══════════════════════════════════════════════════════
-• Turn 1 opening MUST be in the language matching BCP-47 tag: {initial_language}
-• From Turn 2 onward, auto-detect the language the patient is using and reply in THAT language. Switch with them mid-conversation if they switch.
-• Doctor-facing summary always in Turkish with proper medical terminology.
+• ALL patient-facing communication is in TURKISH. No exceptions. No multi-language responses.
+• Even if the patient writes or speaks in English/Arabic/German/anything else, you respond ONLY in warm, accessible Turkish.
+• If the patient does not speak Turkish, gently apologize once in Turkish ("Üzgünüm, yalnızca Türkçe konuşabiliyorum") and continue in Turkish.
+• Doctor-facing summary is also in Turkish with proper medical terminology.
+• No medical jargon to the patient — if a term is necessary, explain it immediately in plain Turkish.
 
 ═══════════════════════════════════════════════════════
 EMOTIONAL TONE (for TTS voice output)
