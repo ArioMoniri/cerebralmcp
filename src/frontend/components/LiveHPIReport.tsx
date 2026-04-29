@@ -29,7 +29,7 @@ interface Props {
  * reintroduces the diff highlights. This matches the editorial mark-up
  * style in the screenshot the user provided.
  */
-export default function LiveHPIReport({ locale, sessionId, refreshKey, maxTurns = 5 }: Props) {
+export default function LiveHPIReport({ locale, sessionId, refreshKey, maxTurns = 3 }: Props) {
   const [currentReport, setCurrentReport] = useState<string>('');
   const [previousReport, setPreviousReport] = useState<string>('');
   const [turnCount, setTurnCount] = useState(0);

@@ -123,7 +123,7 @@ export default function Home() {
                 locale={locale}
                 sessionId={sessionId}
                 refreshKey={hpiRefreshKey}
-                maxTurns={5}
+                maxTurns={3}
               />
               <InterviewProgress
                 locale={locale}

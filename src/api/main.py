@@ -29,6 +29,14 @@ ELEVENLABS_VOICE_ID = os.environ.get("ELEVENLABS_VOICE_ID", "pFZP5JQG7iQjIQuC4Bk
 ELEVENLABS_MODEL = os.environ.get("ELEVENLABS_MODEL", "eleven_turbo_v2_5")
 DEEPGRAM_API_KEY = os.environ.get("DEEPGRAM_API_KEY", "")
 
+# Optional OpenAI provider — if set, /api/chat uses gpt-4o-mini instead of
+# Anthropic Haiku for the per-turn HPI questions. gpt-4o-mini is ~2-3x faster
+# than Haiku 3.5 on short structured outputs. Set OPENAI_API_KEY in .env to
+# opt in; leave unset to keep Anthropic as the default.
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
+OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
+CHAT_PROVIDER = "openai" if OPENAI_API_KEY else "anthropic"
+
 SCRIPTS_DIR = Path(__file__).resolve().parent.parent.parent / "scripts"
 COOKIES_DIR = Path(__file__).resolve().parent.parent.parent / "cookies"
 
@@ -60,6 +68,13 @@ class IngestRequest(BaseModel):
     cookies_json: Optional[str] = None
     patient_id: Optional[str] = None
     department: str = "Kardiyoloji"
+    # When true, skip the Cerebral EHR scrape + Claude summarization entirely
+    # and create a session with empty patient context. Useful for testing or
+    # when the cookies are stale. Returns in <1s.
+    skip_ehr: bool = False
+    # Optional: when skip_ehr is true, populate patient.name from this so the
+    # interview agent can address the patient by name in Turn 1.
+    patient_name: Optional[str] = None
 
 
 class ChatMessage(BaseModel):
@@ -170,12 +185,63 @@ async def health():
 
 @app.post("/api/patient/ingest")
 async def ingest_patient(req: IngestRequest):
-    """Ingest patient data: fetch from Cerebral, summarize, create session."""
+    """Ingest patient data: fetch from Cerebral, summarize, create session.
+
+    If req.skip_ehr is true, skip the scrape+summary and create an empty
+    session — the interview will run on a blank slate (the agent still
+    asks the patient about their reason for visit).
+    """
     patient_id = req.patient_id
     if not patient_id:
         raise HTTPException(400, "patient_id is required")
 
     patient_id = re.sub(r"[\s\-]+", "", patient_id.strip())
+
+    # Skip-EHR mode: build a placeholder summary and return immediately.
+    if req.skip_ehr:
+        session_id = str(uuid.uuid4())
+        placeholder_summary = {
+            "patient": {
+                "name": req.patient_name or "Hasta",
+                "age": "",
+                "sex": "",
+                "patient_id": patient_id,
+                "birth_date": "",
+            },
+            "allergies": [],
+            "chronic_conditions": [],
+            "current_medications": [],
+            "visit_history": [],
+            "active_problems": [],
+            "risk_factors": [],
+            "recent_labs": [],
+            "recent_imaging": [],
+            "surgical_history": [],
+            "family_history": "",
+            "social_history": "",
+            "clinical_timeline_summary": "",
+            "pre_visit_focus_areas": [],
+        }
+        sessions[session_id] = {
+            "patient_id": patient_id,
+            "department": req.department,
+            "patient_data": {},
+            "summary": placeholder_summary,
+            "chat_history": [],
+            "interview_state": {
+                "phase": "not_started",
+                "collected": {},
+                "sections_completed": [],
+            },
+            "created_at": datetime.now().isoformat(),
+            "skip_ehr": True,
+        }
+        return {
+            "success": True,
+            "session_id": session_id,
+            "patient_summary": placeholder_summary,
+            "skip_ehr": True,
+        }
 
     try:
         # Fetch patient data
@@ -300,25 +366,49 @@ async def chat(msg: ChatMessage):
     else:
         messages = [{"role": m["role"], "content": m["content"]} for m in session["chat_history"]]
 
-    # Sonnet 4 with prompt caching: the ~6KB system prompt is mostly stable
-    # within a session, so caching it cuts time-to-first-token by 3-5x on
-    # turns 2-5. Sonnet is also 3x faster than Opus for short HPI questions
-    # while keeping clinical accuracy. max_tokens trimmed to 600 since each
-    # turn is just one Turkish question (final summary still fits easily).
-    response = client.messages.create(
-        model="claude-sonnet-4-20250514",
-        max_tokens=600 if not is_start else 400,
-        system=[
-            {
-                "type": "text",
-                "text": system_prompt,
-                "cache_control": {"type": "ephemeral"},
-            }
-        ],
-        messages=messages,
+    # Provider switch: OpenAI gpt-4o-mini is fastest (~500ms-1s for short
+    # Turkish HPI questions). Anthropic Haiku 3.5 is the default fallback —
+    # ~1-2s with prompt caching on turns 2-3. Both produce a single Turkish
+    # question well within 400 tokens for chat turns and 800 for the final
+    # summary. The previous Sonnet 4 path was 3-5s/turn which made the
+    # voice loop feel laggy.
+    # Token budget: 400 for short HPI questions; 1200 for the final summary
+    # (which is generated when turn_count >= 3).
+    user_turn_so_far = sum(
+        1 for m in session.get("chat_history", [])
+        if m["role"] == "user" and not m["content"].startswith("__START_INTERVIEW__")
     )
+    is_final_summary_turn = user_turn_so_far >= 3
+    max_tok = 1200 if is_final_summary_turn else 400
 
-    assistant_text = response.content[0].text
+    if CHAT_PROVIDER == "openai":
+        try:
+            import openai
+        except ImportError:
+            raise HTTPException(500, "openai package not installed (pip install openai)")
+        oa_client = openai.OpenAI(api_key=OPENAI_API_KEY)
+        oa_messages = [{"role": "system", "content": system_prompt}] + messages
+        oa_resp = oa_client.chat.completions.create(
+            model=OPENAI_MODEL,
+            messages=oa_messages,
+            max_tokens=max_tok,
+            temperature=0.6,
+        )
+        assistant_text = oa_resp.choices[0].message.content or ""
+    else:
+        response = client.messages.create(
+            model="claude-haiku-4-5",
+            max_tokens=max_tok,
+            system=[
+                {
+                    "type": "text",
+                    "text": system_prompt,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ],
+            messages=messages,
+        )
+        assistant_text = response.content[0].text
 
     # Strip emotion/action tags like [warmly] [gently] for chat display
     display_text = re.sub(r"\[[a-zA-Z ]{1,20}\]\s*", "", assistant_text).strip()
@@ -438,7 +528,7 @@ Return ONLY the updated JSON object. No prose, no markdown fences."""
     try:
         client = anthropic.Anthropic()
         response = client.messages.create(
-            model="claude-3-5-haiku-20241022",
+            model="claude-haiku-4-5",
             max_tokens=3000,
             messages=[{"role": "user", "content": prompt}],
         )
@@ -538,7 +628,7 @@ Output ONLY the markdown. No code fences, no preamble, no explanation."""
     try:
         client = anthropic.Anthropic()
         response = client.messages.create(
-            model="claude-3-5-haiku-20241022",
+            model="claude-haiku-4-5",
             max_tokens=1200,
             messages=[{"role": "user", "content": prompt}],
         )
@@ -873,7 +963,7 @@ async def export_pdf(session_id: str):
     today = datetime.now().strftime("%d.%m.%Y")
     story.append(Paragraph(f"<b>Hasta:</b> {html_escape(str(name))}, {html_escape(str(age))} yaş, {html_escape(str(sex))}", Meta))
     story.append(Paragraph(f"<b>Hasta No:</b> {html_escape(str(pid))} &nbsp;&nbsp; <b>Poliklinik:</b> {html_escape(department)} &nbsp;&nbsp; <b>Tarih:</b> {today}", Meta))
-    story.append(Paragraph("<b>Görüşme Yöntemi:</b> AI Ön-Görüşme Asistanı (5 odaklı soru)", Meta))
+    story.append(Paragraph("<b>Görüşme Yöntemi:</b> AI Ön-Görüşme Asistanı (3 odaklı soru)", Meta))
     story.append(Spacer(1, 6))
 
     # ── Body — render the markdown report as Platypus flowables ──
@@ -1070,7 +1160,7 @@ def _session_to_markdown(session: dict) -> str:
 
 
 def _build_interview_system_prompt(session: dict) -> str:
-    """Build the system prompt for the strict 5-turn HPI-deepening agent."""
+    """Build the system prompt for the strict 3-turn HPI-deepening agent."""
     summary = session.get("summary", {})
     department = session.get("department", "Genel")
     patient = summary.get("patient", {})
@@ -1081,7 +1171,7 @@ def _build_interview_system_prompt(session: dict) -> str:
         1 for m in session.get("chat_history", [])
         if m["role"] == "user" and not m["content"].startswith("__START_INTERVIEW__:")
     )
-    turns_remaining = max(0, 5 - user_turn_count)
+    turns_remaining = max(0, 3 - user_turn_count)
 
     ehr_context = json.dumps({
         "demographics": {
@@ -1108,12 +1198,12 @@ You are NOT a doctor. You do NOT diagnose, interpret symptoms, suggest tests, or
 ═══════════════════════════════════════════════════════
 HARD CONSTRAINTS — VIOLATE NONE
 ═══════════════════════════════════════════════════════
-• 5 question turns total. No more, ever.
+• 3 question turns total. No more, ever.
 • 1 question per turn. Multi-part questions FORBIDDEN unless two sub-parts are clinically inseparable. Standing exceptions: (a) onset + temporal course; (b) severity + functional impact.
 • All 5 questions target HPI dimensions only. Do NOT ask about demographics, past medical history, medications, allergies, family history, or social history — these arrive pre-populated in the EHR context below.
 • Turn 1 is fixed (introduction + open-ended chief-complaint invitation).
-• Turns 2-5 are dynamically selected from the HPI priority hierarchy based on which dimensions remain unfilled.
-• After Turn 5, immediately generate the clinical summary using the OUTPUT FORMAT below.
+• Turns 2-3 are dynamically selected from the HPI priority hierarchy based on which dimensions remain unfilled.
+• After Turn 3, immediately generate the clinical summary using the OUTPUT FORMAT below.
 
 CURRENT TURN STATE: The patient has answered {user_turn_count} question(s) so far. {turns_remaining} HPI question turn(s) remaining before you must produce the final summary. {("This is Turn 1 — give the opening introduction in Turkish." if user_turn_count == 0 else f"This is Turn {user_turn_count + 1} — ask exactly ONE Turkish HPI-deepening question." if turns_remaining > 0 else "TURN BUDGET EXHAUSTED — generate the PRE-VİZİT HASTA ÖN-GÖRÜŞME ÖZETİ now in Turkish.")}
 
@@ -1179,7 +1269,7 @@ TURNS 2-5 — Dynamic HPI deepening (one question each)
 ═══════════════════════════════════════════════════════
 Per turn (silently): A. Update HPI schema with last response. B. Optional verification mirror-back if ambiguous (does NOT consume a turn). C. Gap scan via Tier A→B→C hierarchy. D. Embed department-specific cues. E. Ask ONE naturally-phrased question (no numbered lists, no batching).
 
-OVERRIDE CONDITIONS (legitimate exits from 5-turn rule):
+OVERRIDE CONDITIONS (legitimate exits from 3-turn rule):
 • Red-flag → Section 7 emergency protocol; terminate immediately.
 • Patient exhaustion ("bilmiyorum" / repeated terse "yok") → may end early at Turn 3 or 4 with documented gaps.
 • Critical EHR-missing field essential to interpret complaint → may substitute one HPI turn.
@@ -1212,7 +1302,7 @@ COMMUNICATION RULES
 • Off-topic / "what do I have / what should I do" → "Bu soruyu doktorunuz çok daha doğru cevaplayacaktır. Ben yalnızca bilgilerinizi eksiksiz toplamak için buradayım."
 
 ═══════════════════════════════════════════════════════
-SAFETY — emergency protocol overrides the 5-turn rule
+SAFETY — emergency protocol overrides the 3-turn rule
 ═══════════════════════════════════════════════════════
 HARD PROHIBITIONS: NEVER diagnose. NEVER recommend medication/treatment/tests. NEVER interpret symptoms.
 
@@ -1225,7 +1315,7 @@ ACTIVE SUICIDAL IDEATION/PLAN → additionally:
 "Şu anda çok önemli bir şey paylaştınız. Lütfen hemen 182 ALO Psikiyatri Hattı'nı arayın veya en yakın acil servise gidin."
 
 ═══════════════════════════════════════════════════════
-OUTPUT FORMAT — generate AFTER Turn 5 (or on early termination)
+OUTPUT FORMAT — generate AFTER Turn 3 (or on early termination)
 ═══════════════════════════════════════════════════════
 Begin with brief thank-you, then output EXACTLY this Turkish report (the literal title "PRE-VİZİT HASTA ÖN-GÖRÜŞME ÖZETİ" must appear — it triggers completion):
 
@@ -1236,7 +1326,7 @@ PRE-VİZİT HASTA ÖN-GÖRÜŞME ÖZETİ
 **Hasta:** [Ad], [Yaş], [Cinsiyet]   *[EHR]*
 **Poliklinik:** {department}
 **Tarih:** [bugünün tarihi]
-**Görüşme Yöntemi:** AI Ön-Görüşme Asistanı (5 odaklı soru)
+**Görüşme Yöntemi:** AI Ön-Görüşme Asistanı (3 odaklı soru)
 
 ### Başvuru Yakınması (Chief Complaint)   *[Görüşme]*
 [Tek cümlelik, tıbbi terminolojiyle özet]

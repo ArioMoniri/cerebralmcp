@@ -65,6 +65,16 @@ export default function ChatInterface({
     }
   }, []);
 
+  /**
+   * Called by VoiceInput when the user taps mic during agent speech.
+   * Pauses the currently-playing TTS audio so the patient can talk over it.
+   */
+  const interruptTTS = useCallback(() => {
+    try { audioRef.current?.pause(); } catch {}
+    audioRef.current = null;
+    setIsAgentSpeaking(false);
+  }, []);
+
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [chatHistory, liveTranscript]);
@@ -255,9 +265,9 @@ export default function ChatInterface({
               sessionId={sessionId}
               onTranscript={(text) => { setLiveTranscript(''); sendMessage(text); }}
               onInterim={setLiveTranscript}
+              onInterrupt={interruptTTS}
               disabled={isStreaming}
-              autoStart={true}
-              isAgentSpeaking={isAgentSpeaking || isStreaming}
+              isAgentSpeaking={isAgentSpeaking}
             />
           ) : (
             <>

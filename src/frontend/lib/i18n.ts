@@ -74,6 +74,12 @@ export const translations = {
     stop: 'Durdur',
     micDenied: 'Mikrofon erişimi reddedildi',
     liveTranscribing: 'Konuşuyorsunuz...',
+    recordingTapToSend: 'Kaydediliyor… bitince mikrofona dokunun',
+    agentSpeakingTapInterrupt: 'Konuşmak için mikrofona dokunun',
+    stopAndSend: 'Durdur ve gönder',
+    tapToInterrupt: 'Sözünü kes',
+    skipDataFetch: 'Veri çekmeyi atla',
+    skipDataFetchHint: 'Cerebral verisi olmadan başlat',
 
     // Interview Progress
     interviewProgress: 'Görüşme İlerleme',
@@ -213,6 +219,12 @@ export const translations = {
     stop: 'Stop',
     micDenied: 'Microphone access denied',
     liveTranscribing: 'You are speaking...',
+    recordingTapToSend: 'Recording… tap mic when finished',
+    agentSpeakingTapInterrupt: 'Tap mic to speak',
+    stopAndSend: 'Stop and send',
+    tapToInterrupt: 'Interrupt',
+    skipDataFetch: 'Skip data fetch',
+    skipDataFetchHint: 'Start without Cerebral data',
 
     // Interview Progress
     interviewProgress: 'Interview Progress',

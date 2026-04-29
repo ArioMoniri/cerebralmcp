@@ -9,23 +9,25 @@ interface VoiceInputProps {
   sessionId: string;
   onTranscript: (text: string) => void;
   onInterim?: (text: string) => void;
+  /** Called when the user taps the mic while the agent is speaking — parent
+   *  should stop the current TTS audio so the patient can talk over it. */
+  onInterrupt?: () => void;
   disabled: boolean;
-  autoStart?: boolean;
   isAgentSpeaking?: boolean;
 }
 
 /**
- * Voice input with real-time interim transcription.
+ * Push-to-talk voice input.
  *
- * Primary path: Web Speech API (browser built-in) — streams interim + final
- *   results with no backend roundtrip. Lowest latency. Works in Chrome/Edge/Safari.
- * Fallback path: MediaRecorder + VAD + POST /api/stt — used if Web Speech API
- *   is not available (Firefox). Silence detection commits the utterance.
+ * Tap mic → record. Tap again → stop, transcribe, send. Tap during agent
+ * speech → interrupt agent + start recording immediately.
  *
- * Mic is automatically paused while the agent is speaking (echo avoidance).
+ * Primary STT: Web Speech API (Chrome/Edge/Safari) — streams interim text.
+ * Fallback STT: MediaRecorder → POST /api/stt → Deepgram. Used when the
+ * Web Speech API errors with 'network' (Firefox, blocked Google endpoints).
  */
 export default function VoiceInput({
-  locale, sessionId, onTranscript, onInterim, disabled, autoStart = false, isAgentSpeaking = false,
+  locale, sessionId, onTranscript, onInterim, onInterrupt, disabled, isAgentSpeaking = false,
 }: VoiceInputProps) {
   const [isRecording, setIsRecording] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -33,73 +35,59 @@ export default function VoiceInput({
   const [error, setError] = useState<string | null>(null);
   const [liveText, setLiveText] = useState('');
 
-  // Web Speech API refs
+  // ── Web Speech API refs ─────────────────────────────────────────────
   const recognitionRef = useRef<any>(null);
-  const shouldRestartRef = useRef(false);
+  const accumulatedTextRef = useRef('');
+  const webSpeechBlockedRef = useRef(false);
 
-  // Fallback MediaRecorder refs
+  // ── MediaRecorder fallback refs ─────────────────────────────────────
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const chunksRef = useRef<Blob[]>([]);
+
+  // ── Shared (mic stream + level meter) ───────────────────────────────
   const streamRef = useRef<MediaStream | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
-  const silenceTimerRef = useRef<number | null>(null);
-  const hasSpokenRef = useRef(false);
-  const chunksRef = useRef<Blob[]>([]);
   const rafRef = useRef<number | null>(null);
+  const usingWebSpeechRef = useRef(false);
 
-  const pausedRef = useRef(false);
-  const useWebSpeechRef = useRef(false);
-  // If the browser's Web Speech API hits a 'network' error (common when
-  // Google's STT backend is unreachable from the user's network or region —
-  // e.g. behind firewalls, VPNs, or in regions where Chrome can't reach
-  // google.com STT endpoints), permanently disable it for this session and
-  // route through the backend Deepgram fallback instead.
-  const webSpeechBlockedRef = useRef(false);
-  // Forward reference to startMediaRecorder — declared below, but the
-  // Web Speech error handler needs to invoke it. Updated by an effect.
-  const startMediaRecorderRef = useRef<(() => void) | null>(null);
-
-  // Silence-based commit: if interim text hasn't changed for N ms, treat it as final.
-  // Web Speech API with continuous:true is inconsistent about firing isFinal, so we
-  // force-commit pending interim after a short silence.
-  const interimBufferRef = useRef('');
-  const commitTimerRef = useRef<number | null>(null);
-  // Patients pause to think mid-sentence. 1.2s was cutting them off after
-  // the first phrase. 2.2s gives space for a natural pause without making
-  // the conversation feel laggy when they actually finish.
-  const SILENCE_COMMIT_MS = 2200;
-
-  // continuous:true keeps every result (interim + final) in event.results FOREVER,
-  // so subsequent onresult events contain already-committed text. We track what we
-  // last emitted and strip it as a prefix from new events, so each commit is only
-  // the *delta* of what's been said since the last commit.
-  const allTextRef = useRef('');
-  const lastCommittedTextRef = useRef('');
-  // Suppress onresult events while the mic is in a teardown/restart cycle.
-  const suppressResultsRef = useRef(false);
-
-  // Map frontend locale to BCP-47 for Web Speech API
   const speechLang = locale === 'tr' ? 'tr-TR' : 'en-US';
 
-  // Commit pending interim text as a final transcript (used by silence timer + pause).
-  const flushInterim = useCallback(() => {
-    if (commitTimerRef.current) {
-      clearTimeout(commitTimerRef.current);
-      commitTimerRef.current = null;
-    }
-    const pending = interimBufferRef.current.trim();
-    if (pending) {
-      interimBufferRef.current = '';
-      setLiveText('');
-      onInterim?.('');
-      onTranscript(pending);
-    }
-  }, [onInterim, onTranscript]);
+  // ── Level meter — runs while mic is open ────────────────────────────
+  const startLevelMeter = useCallback((stream: MediaStream) => {
+    try {
+      const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+      audioCtxRef.current = audioCtx;
+      const source = audioCtx.createMediaStreamSource(stream);
+      const analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 512;
+      source.connect(analyser);
+      analyserRef.current = analyser;
+      const data = new Uint8Array(analyser.frequencyBinCount);
+      const tick = () => {
+        if (!analyserRef.current) return;
+        analyserRef.current.getByteFrequencyData(data);
+        let sum = 0;
+        for (let i = 0; i < data.length; i++) sum += data[i];
+        setLevel(sum / data.length);
+        rafRef.current = requestAnimationFrame(tick);
+      };
+      rafRef.current = requestAnimationFrame(tick);
+    } catch { /* analyser is non-critical */ }
+  }, []);
 
-  // ── Web Speech API (primary) ─────────────────────────────────────────
-  const startWebSpeech = useCallback(() => {
-    // Hard skip if a previous attempt errored with 'network' — the browser's
-    // STT route to Google is blocked, so we use Deepgram via /api/stt instead.
+  const teardownMic = useCallback(() => {
+    if (rafRef.current) { cancelAnimationFrame(rafRef.current); rafRef.current = null; }
+    audioCtxRef.current?.close().catch(() => {});
+    audioCtxRef.current = null;
+    analyserRef.current = null;
+    streamRef.current?.getTracks().forEach(t => t.stop());
+    streamRef.current = null;
+    setLevel(0);
+  }, []);
+
+  // ── Web Speech path ─────────────────────────────────────────────────
+  const startWebSpeech = useCallback(async (): Promise<boolean> => {
     if (webSpeechBlockedRef.current) return false;
     const SR: any =
       (typeof window !== 'undefined' && (window as any).SpeechRecognition) ||
@@ -113,183 +101,57 @@ export default function VoiceInput({
       rec.interimResults = true;
       rec.maxAlternatives = 1;
 
-      rec.onresult = (event: any) => {
-        if (suppressResultsRef.current) return;
+      accumulatedTextRef.current = '';
 
-        // Walk ALL results and build the full accumulated transcript — this
-        // includes every result the browser has kept since rec.start().
+      rec.onresult = (event: any) => {
         let allText = '';
         for (let i = 0; i < event.results.length; i++) {
           allText += event.results[i][0].transcript + ' ';
         }
-        allText = allText.trim();
-        allTextRef.current = allText;
-
-        // Strip already-committed prefix so we only react to NEW speech.
-        const committed = lastCommittedTextRef.current;
-        let newText = allText;
-        if (committed && allText.startsWith(committed)) {
-          newText = allText.slice(committed.length).trim();
-        } else if (committed && allText.length < committed.length) {
-          // Rec result buffer was reset (fresh rec instance) — clear tracker.
-          lastCommittedTextRef.current = '';
-          newText = allText;
-        }
-
-        if (!newText) return;
-
-        interimBufferRef.current = newText;
-        setLiveText(newText);
-        onInterim?.(newText);
-
-        // Arm the silence-commit timer on every interim update.
-        if (commitTimerRef.current) clearTimeout(commitTimerRef.current);
-        commitTimerRef.current = window.setTimeout(() => {
-          commitTimerRef.current = null;
-          const pending = interimBufferRef.current.trim();
-          if (!pending) return;
-          interimBufferRef.current = '';
-          setLiveText('');
-          onInterim?.('');
-          // Snapshot the current accumulated text as "committed" so the next
-          // onresult event (which will still contain this text) is ignored.
-          lastCommittedTextRef.current = allTextRef.current;
-          // Do NOT stop the rec here — let the parent's setIsStreaming(true)
-          // cycle drive teardown via stopWebSpeech. Stopping here races with
-          // that and leaves Chrome's SR engine in a bad state.
-          onTranscript(pending);
-        }, SILENCE_COMMIT_MS);
+        const trimmed = allText.trim();
+        accumulatedTextRef.current = trimmed;
+        setLiveText(trimmed);
+        onInterim?.(trimmed);
       };
 
       rec.onerror = (e: any) => {
-        console.warn('SpeechRecognition error:', e.error);
         if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
           setError(t(locale, 'micDenied'));
-          shouldRestartRef.current = false;
+          stopRecordingInternal();
           return;
         }
-        // 'network' = browser cannot reach Google's STT backend.
-        // 'audio-capture' = mic hardware/access issue but user already granted.
-        // 'service-not-allowed' = enterprise policy blocks STT.
-        // For any of these, permanently disable Web Speech API for this
-        // session and switch to MediaRecorder + Deepgram fallback.
         if (e.error === 'network' || e.error === 'audio-capture' || e.error === 'aborted') {
-          console.warn('Web Speech unavailable — falling back to Deepgram via /api/stt');
+          // Fall back to MediaRecorder for the rest of the session.
           webSpeechBlockedRef.current = true;
-          shouldRestartRef.current = false;
-          suppressResultsRef.current = true;
-          // Tear down the current rec instance, then bring up MediaRecorder.
-          try { rec.stop(); } catch {}
-          recognitionRef.current = null;
-          if (streamRef.current) {
-            streamRef.current.getTracks().forEach(t => t.stop());
-            streamRef.current = null;
-          }
-          if (audioCtxRef.current) {
-            audioCtxRef.current.close().catch(() => {});
-            audioCtxRef.current = null;
-          }
-          if (rafRef.current) {
-            cancelAnimationFrame(rafRef.current);
-            rafRef.current = null;
-          }
-          analyserRef.current = null;
-          setIsRecording(false);
-          // Honor the parent's pause/disabled gates before starting fallback.
-          if (!pausedRef.current && !disabled) {
-            useWebSpeechRef.current = false;
-            // Small delay so Chrome fully releases the previous mic stream.
-            setTimeout(() => {
-              if (!pausedRef.current && !disabled) {
-                startMediaRecorderRef.current?.();
-              }
-            }, 200);
-          }
+          // Don't stop the mic — we'll switch to MediaRecorder mid-flight.
+          // Easiest path: stop everything and prompt the user to tap again.
+          stopRecordingInternal();
         }
-        // 'no-speech' is fine — onend will fire and we'll restart cleanly.
       };
 
       rec.onend = () => {
-        setIsRecording(false);
-        // Chrome auto-ends continuous recognition after long silence. If we
-        // still want to be listening, recreate a fresh rec (not the same
-        // instance — that leaves Chrome's SR engine in a dead state).
-        // Use refs (not the closed-over `disabled` prop) so the gate stays
-        // fresh across renders.
-        if (shouldRestartRef.current && !pausedRef.current) {
-          setTimeout(() => {
-            if (!shouldRestartRef.current || pausedRef.current) return;
-            // Tear down this rec fully and start a fresh one so the result
-            // buffer is clean and we don't hit "already started" errors.
-            recognitionRef.current = null;
-            startWebSpeech();
-          }, 150);
-        }
+        // Only emit when we explicitly stopped (set in stopRecording).
+        // The onend that follows a manual stop is what triggers the send.
       };
 
-      // Reset per-session trackers for the new rec instance.
-      allTextRef.current = '';
-      lastCommittedTextRef.current = '';
-      interimBufferRef.current = '';
-      suppressResultsRef.current = false;
+      // Open the mic for level meter, then start recognition
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      });
+      streamRef.current = stream;
+      startLevelMeter(stream);
 
       rec.start();
       recognitionRef.current = rec;
-      shouldRestartRef.current = true;
-      setIsRecording(true);
-
-      // Setup audio context for level meter
-      navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
-        streamRef.current = stream;
-        const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
-        audioCtxRef.current = audioCtx;
-        const source = audioCtx.createMediaStreamSource(stream);
-        const analyser = audioCtx.createAnalyser();
-        analyser.fftSize = 512;
-        source.connect(analyser);
-        analyserRef.current = analyser;
-        const data = new Uint8Array(analyser.frequencyBinCount);
-        const tick = () => {
-          if (!analyserRef.current) return;
-          analyserRef.current.getByteFrequencyData(data);
-          let sum = 0;
-          for (let i = 0; i < data.length; i++) sum += data[i];
-          setLevel(sum / data.length);
-          rafRef.current = requestAnimationFrame(tick);
-        };
-        rafRef.current = requestAnimationFrame(tick);
-      }).catch(() => {});
-
+      usingWebSpeechRef.current = true;
       return true;
     } catch {
       return false;
     }
-  }, [speechLang, onInterim, onTranscript, disabled, locale]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [speechLang, locale, onInterim, startLevelMeter]);
 
-  const stopWebSpeech = useCallback(() => {
-    shouldRestartRef.current = false;
-    suppressResultsRef.current = true;
-    // Flush any pending interim before tearing down — prevents losing the
-    // last utterance when the agent starts speaking mid-sentence.
-    flushInterim();
-    try { recognitionRef.current?.stop(); } catch {}
-    recognitionRef.current = null;
-    if (rafRef.current) { cancelAnimationFrame(rafRef.current); rafRef.current = null; }
-    streamRef.current?.getTracks().forEach(t => t.stop());
-    streamRef.current = null;
-    audioCtxRef.current?.close().catch(() => {});
-    audioCtxRef.current = null;
-    analyserRef.current = null;
-    // Reset commit-tracking so the next fresh rec isn't confused by stale
-    // prefixes from the previous session.
-    allTextRef.current = '';
-    lastCommittedTextRef.current = '';
-    interimBufferRef.current = '';
-    setIsRecording(false);
-    setLiveText('');
-  }, [flushInterim]);
-
-  // ── Fallback: MediaRecorder + /api/stt ───────────────────────────────
+  // ── MediaRecorder fallback ──────────────────────────────────────────
   const sendAudio = useCallback(async (blob: Blob) => {
     if (blob.size < 1500) return;
     setIsProcessing(true);
@@ -305,141 +167,114 @@ export default function VoiceInput({
     } finally { setIsProcessing(false); }
   }, [onTranscript]);
 
-  const startMediaRecorder = useCallback(async () => {
+  const startMediaRecorder = useCallback(async (): Promise<boolean> => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
       });
       streamRef.current = stream;
+      startLevelMeter(stream);
+
       const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
         ? 'audio/webm;codecs=opus'
         : 'audio/webm';
       const mr = new MediaRecorder(stream, { mimeType });
       mediaRecorderRef.current = mr;
       chunksRef.current = [];
-      hasSpokenRef.current = false;
 
       mr.ondataavailable = (e) => { if (e.data.size > 0) chunksRef.current.push(e.data); };
       mr.onstop = async () => {
         const blob = new Blob(chunksRef.current, { type: mimeType });
         chunksRef.current = [];
-        if (hasSpokenRef.current) await sendAudio(blob);
-        hasSpokenRef.current = false;
-        if (!pausedRef.current && !disabled) {
-          setTimeout(() => { mediaRecorderRef.current = null; startMediaRecorder(); }, 100);
-        } else { mediaRecorderRef.current = null; }
+        await sendAudio(blob);
       };
 
       mr.start(250);
-      setIsRecording(true);
-
-      const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
-      audioCtxRef.current = audioCtx;
-      const source = audioCtx.createMediaStreamSource(stream);
-      const analyser = audioCtx.createAnalyser();
-      analyser.fftSize = 1024;
-      source.connect(analyser);
-      analyserRef.current = analyser;
-      const data = new Uint8Array(analyser.frequencyBinCount);
-      const SPEECH_THRESHOLD = 18;
-      // Match the Web Speech path — 2.2s lets the patient pause mid-thought
-      // without committing a partial answer.
-      const SILENCE_MS = 2200;
-      const tick = () => {
-        if (!analyserRef.current) return;
-        analyserRef.current.getByteFrequencyData(data);
-        let sum = 0;
-        for (let i = 0; i < data.length; i++) sum += data[i];
-        const avg = sum / data.length;
-        setLevel(avg);
-        if (avg > SPEECH_THRESHOLD) {
-          hasSpokenRef.current = true;
-          if (silenceTimerRef.current) { clearTimeout(silenceTimerRef.current); silenceTimerRef.current = null; }
-        } else if (hasSpokenRef.current && !silenceTimerRef.current) {
-          silenceTimerRef.current = window.setTimeout(() => {
-            try { mediaRecorderRef.current?.stop(); } catch {}
-          }, SILENCE_MS);
-        }
-        rafRef.current = requestAnimationFrame(tick);
-      };
-      rafRef.current = requestAnimationFrame(tick);
+      usingWebSpeechRef.current = false;
+      return true;
     } catch (e: any) {
       setError(e?.message || t(locale, 'micDenied'));
+      return false;
     }
-  }, [disabled, locale, sendAudio]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [locale, sendAudio, startLevelMeter]);
 
-  const stopMediaRecorder = useCallback(() => {
-    if (silenceTimerRef.current) { clearTimeout(silenceTimerRef.current); silenceTimerRef.current = null; }
-    if (rafRef.current) { cancelAnimationFrame(rafRef.current); rafRef.current = null; }
-    try { mediaRecorderRef.current?.stop(); } catch {}
-    streamRef.current?.getTracks().forEach(t => t.stop());
-    audioCtxRef.current?.close().catch(() => {});
-    mediaRecorderRef.current = null;
-    streamRef.current = null;
-    audioCtxRef.current = null;
-    analyserRef.current = null;
-    setIsRecording(false);
-  }, []);
-
-  // Keep the forward-reference ref pointed at the latest startMediaRecorder
-  // so the Web Speech error handler can fall through to it without a TDZ
-  // forward-reference error.
-  useEffect(() => {
-    startMediaRecorderRef.current = startMediaRecorder;
-  }, [startMediaRecorder]);
-
-  // ── Unified start/stop ───────────────────────────────────────────────
-  const start = useCallback(() => {
-    pausedRef.current = false;
-    setError(null);
-    if (startWebSpeech()) {
-      useWebSpeechRef.current = true;
+  // ── Public start/stop ──────────────────────────────────────────────
+  const stopRecordingInternal = useCallback(() => {
+    if (usingWebSpeechRef.current) {
+      const finalText = accumulatedTextRef.current.trim();
+      try { recognitionRef.current?.stop(); } catch {}
+      recognitionRef.current = null;
+      teardownMic();
+      setIsRecording(false);
+      setLiveText('');
+      onInterim?.('');
+      if (finalText) onTranscript(finalText);
+      accumulatedTextRef.current = '';
     } else {
-      useWebSpeechRef.current = false;
-      startMediaRecorder();
+      // MediaRecorder.onstop will fire and POST to /api/stt
+      try { mediaRecorderRef.current?.stop(); } catch {}
+      mediaRecorderRef.current = null;
+      teardownMic();
+      setIsRecording(false);
+      setLiveText('');
+      onInterim?.('');
     }
-  }, [startWebSpeech, startMediaRecorder]);
+  }, [onTranscript, onInterim, teardownMic]);
 
-  const stop = useCallback(() => {
-    pausedRef.current = true;
-    if (useWebSpeechRef.current) stopWebSpeech();
-    else stopMediaRecorder();
+  const startRecording = useCallback(async () => {
+    setError(null);
     setLiveText('');
     onInterim?.('');
-  }, [stopWebSpeech, stopMediaRecorder, onInterim]);
-
-  // Pause mic while agent speaks
-  useEffect(() => {
-    if (isAgentSpeaking) {
-      if (useWebSpeechRef.current) stopWebSpeech();
-      else stopMediaRecorder();
-    } else if (autoStart && !disabled) {
-      start();
+    setIsRecording(true);
+    const ok = await startWebSpeech();
+    if (!ok) {
+      const ok2 = await startMediaRecorder();
+      if (!ok2) {
+        setIsRecording(false);
+        return;
+      }
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isAgentSpeaking, autoStart, disabled]);
+  }, [startWebSpeech, startMediaRecorder, onInterim]);
 
-  // Auto-start on mount
+  const handleClick = useCallback(async () => {
+    if (disabled && !isRecording) return;
+    if (isRecording) {
+      stopRecordingInternal();
+      return;
+    }
+    // Tap-to-interrupt: if the agent is speaking, ask the parent to stop
+    // the TTS audio, then immediately start recording.
+    if (isAgentSpeaking && onInterrupt) {
+      onInterrupt();
+    }
+    await startRecording();
+  }, [disabled, isRecording, isAgentSpeaking, onInterrupt, startRecording, stopRecordingInternal]);
+
+  // Cleanup on unmount
   useEffect(() => {
-    if (autoStart && !isAgentSpeaking && !disabled) start();
-    return () => { pausedRef.current = true; stop(); };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    return () => {
+      try { recognitionRef.current?.stop(); } catch {}
+      try { mediaRecorderRef.current?.stop(); } catch {}
+      teardownMic();
+    };
+  }, [teardownMic]);
 
-  const toggle = () => {
-    if (isRecording) stop();
-    else start();
-  };
-
+  // ── UI ──────────────────────────────────────────────────────────────
   const statusText = error
     ? error
-    : isAgentSpeaking
-      ? t(locale, 'agentSpeaking')
+    : isRecording
+      ? (liveText || t(locale, 'recordingTapToSend'))
       : isProcessing
         ? t(locale, 'processing')
-        : isRecording
-          ? (liveText || t(locale, 'listening'))
+        : isAgentSpeaking
+          ? t(locale, 'agentSpeakingTapInterrupt')
           : t(locale, 'tapToSpeak');
+
+  const buttonState =
+    isRecording ? 'recording' :
+    isAgentSpeaking ? 'interrupt' :
+    'idle';
 
   return (
     <div className="flex-1 flex items-center gap-3">
@@ -462,10 +297,10 @@ export default function VoiceInput({
           className={`text-sm truncate flex-1 ${
             error
               ? 'text-cerebral-red'
-              : isAgentSpeaking
-                ? 'text-cerebral-teal'
-                : liveText
-                  ? 'text-cerebral-text italic'
+              : isRecording && liveText
+                ? 'text-cerebral-text italic'
+                : isAgentSpeaking
+                  ? 'text-cerebral-teal'
                   : 'text-cerebral-accent'
           }`}
         >
@@ -474,21 +309,36 @@ export default function VoiceInput({
       </div>
 
       <button
-        onClick={toggle}
-        disabled={disabled || isAgentSpeaking}
-        title={isRecording ? t(locale, 'stop') : t(locale, 'start')}
-        className={`p-4 rounded-xl transition-all duration-200 flex-shrink-0
-          ${isRecording ? 'bg-cerebral-red text-white' : 'bg-cerebral-accent text-white hover:bg-cerebral-accent/80'}
-          ${isRecording && !isAgentSpeaking ? 'animate-pulse' : ''}
+        onClick={handleClick}
+        disabled={disabled && !isRecording && !isAgentSpeaking}
+        title={
+          buttonState === 'recording' ? t(locale, 'stopAndSend') :
+          buttonState === 'interrupt' ? t(locale, 'tapToInterrupt') :
+          t(locale, 'tapToSpeak')
+        }
+        className={`relative p-4 rounded-xl transition-all duration-200 flex-shrink-0
+          ${buttonState === 'recording'
+            ? 'bg-cerebral-red text-white animate-pulse shadow-lg shadow-red-500/30'
+            : buttonState === 'interrupt'
+              ? 'bg-gradient-to-br from-cerebral-teal to-cerebral-accent text-white shadow-lg shadow-cyan-500/30'
+              : 'bg-gradient-to-br from-cerebral-accent to-cerebral-teal text-white hover:opacity-90'}
           disabled:opacity-50 disabled:cursor-not-allowed`}
       >
-        {isRecording ? (
-          <svg className="w-6 h-6" fill="currentColor" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2" /></svg>
+        {buttonState === 'recording' ? (
+          // Stop icon (filled square)
+          <svg className="w-6 h-6" fill="currentColor" viewBox="0 0 24 24">
+            <rect x="6" y="6" width="12" height="12" rx="2" />
+          </svg>
         ) : (
+          // Mic icon
           <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
               d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
           </svg>
+        )}
+        {/* Pulse ring when agent is speaking — invites tap-to-interrupt */}
+        {buttonState === 'interrupt' && (
+          <span className="absolute inset-0 rounded-xl border-2 border-cerebral-teal animate-ping pointer-events-none" />
         )}
       </button>
     </div>

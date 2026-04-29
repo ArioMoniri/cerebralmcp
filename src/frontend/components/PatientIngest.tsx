@@ -45,8 +45,7 @@ export default function PatientIngest({
     onIdentitySubmit({ firstName: capitalize(firstName), lastName: capitalize(lastName) });
   };
 
-  const handleProtocolSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const submitIngest = async (skip_ehr: boolean) => {
     if (!patientId.trim()) return;
 
     setIsLoading(true);
@@ -59,6 +58,8 @@ export default function PatientIngest({
         body: JSON.stringify({
           patient_id: patientId.replace(/[\s-]/g, ''),
           department,
+          skip_ehr,
+          patient_name: skip_ehr ? `${capitalize(firstName)} ${capitalize(lastName)}` : undefined,
         }),
       });
 
@@ -73,6 +74,15 @@ export default function PatientIngest({
     } finally {
       setIsLoading(false);
     }
+  };
+
+  const handleProtocolSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    await submitIngest(false);
+  };
+
+  const handleSkipEhr = async () => {
+    await submitIngest(true);
   };
 
   // Step indicator
@@ -253,6 +263,26 @@ export default function PatientIngest({
                 )}
               </button>
             </div>
+
+            {/* Skip-EHR shortcut — bypasses Cerebral scrape, blank session in <1s */}
+            <button
+              type="button"
+              onClick={handleSkipEhr}
+              disabled={isLoading || !patientId.trim()}
+              className="w-full mt-2 py-2.5 text-xs font-medium text-cerebral-muted
+                         border border-dashed border-cerebral-border rounded-xl
+                         hover:text-cerebral-text hover:border-cerebral-accent/40
+                         disabled:opacity-50 disabled:cursor-not-allowed
+                         transition-all duration-200 flex items-center justify-center gap-2"
+              title={t(locale, 'skipDataFetchHint')}
+            >
+              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                  d="M13 5l7 7-7 7M5 5l7 7-7 7" />
+              </svg>
+              {t(locale, 'skipDataFetch')}
+              <span className="text-cerebral-muted/60">— {t(locale, 'skipDataFetchHint')}</span>
+            </button>
           </form>
         </>
       )}
