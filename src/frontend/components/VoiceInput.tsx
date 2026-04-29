@@ -39,6 +39,11 @@ export default function VoiceInput({
   const recognitionRef = useRef<any>(null);
   const accumulatedTextRef = useRef('');
   const webSpeechBlockedRef = useRef(false);
+  // Set to true when the user has tapped stop. The Web Speech engine fires
+  // one final `onresult` between rec.stop() and onend, so we wait for onend
+  // before emitting the transcript — otherwise the last 1-2s of speech are
+  // missing from the user's message.
+  const stopRequestedRef = useRef(false);
 
   // ── MediaRecorder fallback refs ─────────────────────────────────────
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
@@ -130,8 +135,22 @@ export default function VoiceInput({
       };
 
       rec.onend = () => {
-        // Only emit when we explicitly stopped (set in stopRecording).
-        // The onend that follows a manual stop is what triggers the send.
+        // Fired after rec.stop() once the engine has flushed any final
+        // results. accumulatedTextRef now has EVERY word the engine
+        // recognized (including the last ones that might have been mid-
+        // processing when the user tapped stop). This is the correct
+        // moment to emit the transcript — emitting on the click handler
+        // would lose the trailing words.
+        if (!stopRequestedRef.current) return;
+        stopRequestedRef.current = false;
+        const finalText = accumulatedTextRef.current.trim();
+        accumulatedTextRef.current = '';
+        recognitionRef.current = null;
+        teardownMic();
+        setIsRecording(false);
+        setLiveText('');
+        onInterim?.('');
+        if (finalText) onTranscript(finalText);
       };
 
       // Open the mic for level meter, then start recognition
@@ -153,7 +172,12 @@ export default function VoiceInput({
 
   // ── MediaRecorder fallback ──────────────────────────────────────────
   const sendAudio = useCallback(async (blob: Blob) => {
-    if (blob.size < 1500) return;
+    if (blob.size < 1500) {
+      setIsProcessing(false);
+      setLiveText('');
+      onInterim?.('');
+      return;
+    }
     setIsProcessing(true);
     try {
       const fd = new FormData();
@@ -162,10 +186,17 @@ export default function VoiceInput({
       if (res.ok) {
         const data = await res.json();
         const text = (data.transcript || '').trim();
+        // Clear the "transcribing..." placeholder before emitting — the
+        // chat bubble will replace it.
+        setLiveText('');
+        onInterim?.('');
         if (text) onTranscript(text);
+      } else {
+        setLiveText('');
+        onInterim?.('');
       }
     } finally { setIsProcessing(false); }
-  }, [onTranscript]);
+  }, [onTranscript, onInterim]);
 
   const startMediaRecorder = useCallback(async (): Promise<boolean> => {
     try {
@@ -202,25 +233,37 @@ export default function VoiceInput({
   // ── Public start/stop ──────────────────────────────────────────────
   const stopRecordingInternal = useCallback(() => {
     if (usingWebSpeechRef.current) {
-      const finalText = accumulatedTextRef.current.trim();
-      try { recognitionRef.current?.stop(); } catch {}
-      recognitionRef.current = null;
-      teardownMic();
+      // Mark that we're stopping intentionally. The engine will fire one
+      // last onresult, then onend — onend reads accumulatedTextRef and
+      // emits onTranscript. We do NOT clear interim text here, so the
+      // user keeps seeing what they said until the real chat bubble
+      // replaces it.
+      stopRequestedRef.current = true;
       setIsRecording(false);
-      setLiveText('');
-      onInterim?.('');
-      if (finalText) onTranscript(finalText);
-      accumulatedTextRef.current = '';
+      try { recognitionRef.current?.stop(); } catch {
+        // If stop() throws, fall back to immediate emit
+        const finalText = accumulatedTextRef.current.trim();
+        accumulatedTextRef.current = '';
+        recognitionRef.current = null;
+        teardownMic();
+        setLiveText('');
+        onInterim?.('');
+        if (finalText) onTranscript(finalText);
+      }
     } else {
-      // MediaRecorder.onstop will fire and POST to /api/stt
+      // MediaRecorder.onstop will fire and POST to /api/stt. While
+      // Deepgram processes, show a "transcribing" placeholder so the
+      // user has feedback (otherwise they'd see nothing for 2-5s).
+      setIsRecording(false);
+      setIsProcessing(true);
+      const placeholder = t(locale, 'transcribingHint');
+      setLiveText(placeholder);
+      onInterim?.(placeholder);
       try { mediaRecorderRef.current?.stop(); } catch {}
       mediaRecorderRef.current = null;
       teardownMic();
-      setIsRecording(false);
-      setLiveText('');
-      onInterim?.('');
     }
-  }, [onTranscript, onInterim, teardownMic]);
+  }, [onTranscript, onInterim, teardownMic, locale]);
 
   const startRecording = useCallback(async () => {
     setError(null);
@@ -266,7 +309,7 @@ export default function VoiceInput({
     : isRecording
       ? (liveText || t(locale, 'recordingTapToSend'))
       : isProcessing
-        ? t(locale, 'processing')
+        ? (liveText || t(locale, 'processing'))
         : isAgentSpeaking
           ? t(locale, 'agentSpeakingTapInterrupt')
           : t(locale, 'tapToSpeak');

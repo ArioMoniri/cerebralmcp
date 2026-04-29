@@ -80,6 +80,7 @@ export const translations = {
     tapToInterrupt: 'Sözünü kes',
     skipDataFetch: 'Veri çekmeyi atla',
     skipDataFetchHint: 'Cerebral verisi olmadan başlat',
+    transcribingHint: 'Söyledikleriniz yazıya dökülüyor…',
 
     // Interview Progress
     interviewProgress: 'Görüşme İlerleme',
@@ -225,6 +226,7 @@ export const translations = {
     tapToInterrupt: 'Interrupt',
     skipDataFetch: 'Skip data fetch',
     skipDataFetchHint: 'Start without Cerebral data',
+    transcribingHint: 'Transcribing what you said…',
 
     // Interview Progress
     interviewProgress: 'Interview Progress',

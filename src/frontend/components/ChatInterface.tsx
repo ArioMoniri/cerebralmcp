@@ -34,32 +34,90 @@ export default function ChatInterface({
     if (!text.trim()) return;
     try {
       setIsAgentSpeaking(true);
+
+      // Stop any previous playback before kicking off a new one.
+      if (audioRef.current) {
+        try { audioRef.current.pause(); } catch {}
+      }
+
+      // Strategy: stream the response body through MediaSource so the
+      // browser starts decoding mp3 frames as the first chunks arrive
+      // (audio begins ~150-300ms after the request, instead of waiting
+      // for the full 1-3s download). Falls back to the old "await blob"
+      // path if MediaSource isn't supported (Safari mobile, etc.).
+      const supportsMSE =
+        typeof MediaSource !== 'undefined' &&
+        MediaSource.isTypeSupported('audio/mpeg');
+
       const res = await apiFetch('/api/tts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ text }),
       }, 120_000);
+
       if (!res.ok) {
         setIsAgentSpeaking(false);
         return;
       }
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      // Stop any previous playback
-      if (audioRef.current) {
-        try { audioRef.current.pause(); } catch {}
+
+      if (supportsMSE && res.body) {
+        const ms = new MediaSource();
+        const url = URL.createObjectURL(ms);
+        const audio = new Audio(url);
+        audioRef.current = audio;
+        audio.onended = () => {
+          setIsAgentSpeaking(false);
+          URL.revokeObjectURL(url);
+        };
+        audio.onerror = () => {
+          setIsAgentSpeaking(false);
+          URL.revokeObjectURL(url);
+        };
+
+        await new Promise<void>((resolve) => {
+          ms.addEventListener('sourceopen', () => resolve(), { once: true });
+        });
+
+        const sb = ms.addSourceBuffer('audio/mpeg');
+        const reader = res.body.getReader();
+        let started = false;
+
+        const pump = async () => {
+          while (true) {
+            const { value, done } = await reader.read();
+            if (done) {
+              try { ms.endOfStream(); } catch {}
+              break;
+            }
+            if (sb.updating) {
+              await new Promise<void>(r =>
+                sb.addEventListener('updateend', () => r(), { once: true }),
+              );
+            }
+            try { sb.appendBuffer(value); } catch { break; }
+            if (!started) {
+              started = true;
+              audio.play().catch(() => setIsAgentSpeaking(false));
+            }
+          }
+        };
+        pump();
+      } else {
+        // Legacy path: wait for the full blob and play.
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const audio = new Audio(url);
+        audioRef.current = audio;
+        audio.onended = () => {
+          setIsAgentSpeaking(false);
+          URL.revokeObjectURL(url);
+        };
+        audio.onerror = () => {
+          setIsAgentSpeaking(false);
+          URL.revokeObjectURL(url);
+        };
+        await audio.play();
       }
-      const audio = new Audio(url);
-      audioRef.current = audio;
-      audio.onended = () => {
-        setIsAgentSpeaking(false);
-        URL.revokeObjectURL(url);
-      };
-      audio.onerror = () => {
-        setIsAgentSpeaking(false);
-        URL.revokeObjectURL(url);
-      };
-      await audio.play();
     } catch {
       setIsAgentSpeaking(false);
     }
