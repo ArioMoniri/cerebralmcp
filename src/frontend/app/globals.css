@@ -321,3 +321,82 @@ body {
 .custom-scroll::-webkit-scrollbar-thumb:hover {
   background: linear-gradient(180deg, rgba(99, 102, 241, 0.7), rgba(56, 189, 248, 0.7));
 }
+
+/* ─────────────────────────────────────────────────────────────────────
+   Clinical Report View — section cards with tinted accents
+   ───────────────────────────────────────────────────────────────────── */
+.report-card-hero {
+  background: linear-gradient(135deg, rgba(99, 102, 241, 0.12) 0%, rgba(56, 189, 248, 0.10) 50%, rgba(34, 197, 94, 0.06) 100%);
+  border: 1px solid rgba(99, 102, 241, 0.25);
+  border-radius: 1rem;
+  padding: 1.25rem 1.5rem;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  box-shadow: 0 8px 32px -8px rgba(99, 102, 241, 0.25), inset 0 1px 0 0 rgba(255,255,255,0.04);
+}
+
+.hero-avatar {
+  width: 48px;
+  height: 48px;
+  border-radius: 12px;
+  background: linear-gradient(135deg, rgb(99, 102, 241), rgb(56, 189, 248));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: white;
+  flex-shrink: 0;
+  box-shadow: 0 6px 16px -4px rgba(99, 102, 241, 0.5);
+}
+
+.report-card {
+  background: rgba(15, 23, 42, 0.55);
+  border: 1px solid rgba(99, 102, 241, 0.15);
+  border-radius: 0.85rem;
+  padding: 1rem 1.25rem;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  position: relative;
+  overflow: hidden;
+}
+
+.report-card::before {
+  content: '';
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  width: 3px;
+  background: linear-gradient(180deg, transparent, var(--accent-color, rgb(99, 102, 241)), transparent);
+  opacity: 0.7;
+}
+
+.report-card-rose   { --accent-color: rgb(244, 63, 94); border-color: rgba(244, 63, 94, 0.20); }
+.report-card-amber  { --accent-color: rgb(245, 158, 11); border-color: rgba(245, 158, 11, 0.20); }
+.report-card-indigo { --accent-color: rgb(99, 102, 241); border-color: rgba(99, 102, 241, 0.20); }
+.report-card-teal   { --accent-color: rgb(20, 184, 166); border-color: rgba(20, 184, 166, 0.20); }
+.report-card-slate  { --accent-color: rgb(100, 116, 139); border-color: rgba(100, 116, 139, 0.20); }
+
+.section-icon {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.section-icon-rose   { background: rgba(244, 63, 94, 0.12); color: rgb(251, 113, 133); }
+.section-icon-amber  { background: rgba(245, 158, 11, 0.12); color: rgb(252, 211, 77); }
+.section-icon-indigo { background: rgba(99, 102, 241, 0.14); color: rgb(165, 180, 252); }
+.section-icon-teal   { background: rgba(20, 184, 166, 0.14); color: rgb(94, 234, 212); }
+.section-icon-slate  { background: rgba(100, 116, 139, 0.14); color: rgb(203, 213, 225); }
+
+/* Override prose colors inside report cards */
+.report-prose p,
+.report-prose li {
+  color: rgba(229, 231, 235, 0.9) !important;
+}
+.report-prose strong {
+  color: rgb(229, 231, 235) !important;
+}
+.report-prose em {
+  color: rgba(156, 163, 175, 1) !important;
+}

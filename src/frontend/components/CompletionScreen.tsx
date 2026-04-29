@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { Locale, t } from '@/lib/i18n';
 import { Message, PatientIdentity, PatientSummary } from '@/lib/types';
 import { apiFetch, API_BASE } from '@/lib/api';
+import ClinicalReportView from './ClinicalReportView';
 
 interface Props {
   locale: Locale;
@@ -66,29 +67,55 @@ export default function CompletionScreen({
   };
 
   return (
-    <div className="flex-1 flex flex-col items-center justify-center p-8 fade-in">
-      {/* Success Animation */}
-      <div className="check-circle w-20 h-20 rounded-full bg-cerebral-green/20 flex items-center justify-center mb-6">
-        <svg className="w-10 h-10 text-cerebral-green" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-        </svg>
-      </div>
+    <div className={`flex-1 flex flex-col fade-in overflow-y-auto custom-scroll p-6 md:p-8
+      ${clinicalReport && showReport ? 'items-stretch' : 'items-center justify-center'}`}>
 
-      <h2 className="text-2xl font-bold text-cerebral-text mb-2">{t(locale, 'interviewComplete')}</h2>
-      <p className="text-lg text-cerebral-green font-medium mb-2">{t(locale, 'thankYou')}</p>
-      <p className="text-sm text-cerebral-muted text-center max-w-md mb-8">
-        {t(locale, 'completeMessage')}
-      </p>
+      {/* COMPACT TOP-OF-PAGE SUCCESS — only when report not yet shown */}
+      {!(clinicalReport && showReport) && (
+        <>
+          <div className="check-circle w-20 h-20 rounded-full bg-cerebral-green/20 flex items-center justify-center mb-6 mx-auto">
+            <svg className="w-10 h-10 text-cerebral-green" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+            </svg>
+          </div>
+          <h2 className="text-2xl font-bold text-cerebral-text mb-2 text-center">{t(locale, 'interviewComplete')}</h2>
+          <p className="text-lg text-cerebral-green font-medium mb-2 text-center">{t(locale, 'thankYou')}</p>
+          <p className="text-sm text-cerebral-muted text-center max-w-md mb-8 mx-auto">
+            {t(locale, 'completeMessage')}
+          </p>
 
-      {/* Continue to doctor banner */}
-      <div className="glass-card glow-green px-8 py-4 mb-8 text-center">
-        <p className="text-lg font-semibold text-cerebral-green">
-          {t(locale, 'continueToDoctor')}
-        </p>
-      </div>
+          <div className="glass-card glow-green px-8 py-4 mb-8 text-center mx-auto">
+            <p className="text-lg font-semibold text-cerebral-green">
+              {t(locale, 'continueToDoctor')}
+            </p>
+          </div>
+        </>
+      )}
 
-      {/* Report Actions */}
-      <div className="flex flex-col items-center gap-4 w-full max-w-md">
+      {/* COMPACT HEADER — only when report IS shown */}
+      {clinicalReport && showReport && (
+        <div className="max-w-3xl w-full mx-auto flex items-center gap-3 mb-4">
+          <div className="check-circle w-9 h-9 rounded-full bg-cerebral-green/20 flex items-center justify-center flex-shrink-0">
+            <svg className="w-5 h-5 text-cerebral-green" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
+            </svg>
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="text-sm font-semibold text-cerebral-text">{t(locale, 'interviewComplete')}</div>
+            <div className="text-xs text-cerebral-muted">{t(locale, 'continueToDoctor')}</div>
+          </div>
+          <button
+            onClick={() => setShowReport(false)}
+            className="text-xs px-3 py-1.5 rounded-lg border border-cerebral-border text-cerebral-muted
+                       hover:text-cerebral-text hover:border-cerebral-accent/40 transition-all duration-200"
+          >
+            {locale === 'tr' ? 'Raporu Gizle' : 'Hide Report'}
+          </button>
+        </div>
+      )}
+
+      {/* REPORT ACTIONS + REPORT VIEW */}
+      <div className={`w-full ${clinicalReport && showReport ? 'max-w-3xl mx-auto' : 'max-w-md mx-auto'} flex flex-col items-stretch gap-4`}>
         {!clinicalReport && (
           <button
             onClick={generateReport}
@@ -110,17 +137,19 @@ export default function CompletionScreen({
           </button>
         )}
 
+        {clinicalReport && !showReport && (
+          <button
+            onClick={() => setShowReport(true)}
+            className="w-full py-3 border border-cerebral-accent text-cerebral-accent rounded-xl
+                       hover:bg-cerebral-accent/10 transition-all duration-200"
+          >
+            {t(locale, 'viewSummary')}
+          </button>
+        )}
+
         {clinicalReport && (
           <>
-            <button
-              onClick={() => setShowReport(!showReport)}
-              className="w-full py-3 border border-cerebral-accent text-cerebral-accent rounded-xl
-                         hover:bg-cerebral-accent/10 transition-all duration-200"
-            >
-              {showReport ? (locale === 'tr' ? 'Raporu Gizle' : 'Hide Report') : t(locale, 'viewSummary')}
-            </button>
-
-            {/* Export buttons */}
+            {/* Export toolbar */}
             <div className="flex gap-2 w-full">
               {['copy', 'json', 'markdown', 'pdf'].map(fmt => (
                 <button
@@ -136,11 +165,12 @@ export default function CompletionScreen({
             </div>
 
             {showReport && (
-              <div className="w-full glass-card p-4 mt-2 max-h-96 overflow-y-auto">
-                <pre className="text-xs text-cerebral-muted whitespace-pre-wrap font-mono leading-relaxed">
-                  {clinicalReport}
-                </pre>
-              </div>
+              <ClinicalReportView
+                locale={locale}
+                report={clinicalReport}
+                identity={identity}
+                summary={summary}
+              />
             )}
           </>
         )}
@@ -149,7 +179,7 @@ export default function CompletionScreen({
           onClick={onNewInterview}
           className="w-full py-3 border border-cerebral-border text-cerebral-muted rounded-xl
                      hover:text-cerebral-text hover:border-cerebral-accent/50
-                     transition-all duration-200 mt-4"
+                     transition-all duration-200 mt-2"
         >
           {t(locale, 'newInterview')}
         </button>
