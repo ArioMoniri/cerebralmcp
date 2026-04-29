@@ -797,57 +797,118 @@ async def tts(req: TTSRequest):
 
 @app.post("/api/stt")
 async def stt(audio: UploadFile = File(...), language: Optional[str] = None):
-    """Transcribe audio using Deepgram nova-2 (multilingual)."""
-    if not DEEPGRAM_API_KEY:
-        raise HTTPException(503, "DEEPGRAM_API_KEY not configured")
+    """Transcribe audio. Tries OpenAI Whisper first (fast, excellent Turkish),
+    falls back to Deepgram nova-2 if OpenAI fails or isn't configured."""
+    audio_bytes = await audio.read()
+    print(f"[STT] received {len(audio_bytes)} bytes, content_type={audio.content_type}", flush=True)
+    if not audio_bytes:
+        raise HTTPException(400, "Empty audio")
+    if len(audio_bytes) < 800:
+        # Sub-second clips are usually accidental double-taps. Return empty
+        # so the frontend doesn't surface a 502 to the user.
+        print(f"[STT] clip too short ({len(audio_bytes)} bytes), returning empty", flush=True)
+        return {"transcript": "", "detected_language": None, "confidence": None}
 
-    try:
-        audio_bytes = await audio.read()
-        if not audio_bytes:
-            raise HTTPException(400, "Empty audio")
+    lang = language or "tr"
+    last_err: Optional[str] = None
 
-        params: dict[str, Any] = {
-            "model": "nova-2",
-            "smart_format": "true",
-            "detect_language": "true",
-        }
-        if language:
-            params["language"] = language
+    # ── Provider 1: OpenAI Whisper (gpt-4o-mini-transcribe) ─────────────
+    if OPENAI_API_KEY:
+        try:
+            # Pick a sensible filename extension based on MIME so OpenAI's
+            # multipart parser routes it correctly.
+            mime = (audio.content_type or "audio/webm").split(";")[0].strip()
+            ext = {
+                "audio/webm": "webm", "audio/ogg": "ogg", "audio/wav": "wav",
+                "audio/mp3": "mp3", "audio/mpeg": "mp3", "audio/mp4": "mp4",
+                "audio/m4a": "m4a", "audio/aac": "aac",
+            }.get(mime, "webm")
 
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.post(
-                "https://api.deepgram.com/v1/listen",
-                params=params,
-                headers={
-                    "Authorization": f"Token {DEEPGRAM_API_KEY}",
-                    "Content-Type": audio.content_type or "audio/webm",
-                },
-                content=audio_bytes,
-            )
-            if resp.status_code != 200:
-                raise HTTPException(502, f"Deepgram error {resp.status_code}: {resp.text[:300]}")
+            async with httpx.AsyncClient(timeout=30) as oa:
+                files = {
+                    "file": (f"speech.{ext}", audio_bytes, mime),
+                }
+                data = {
+                    # gpt-4o-mini-transcribe is ~2x faster than whisper-1
+                    # and at parity / better quality on short clips.
+                    "model": "gpt-4o-mini-transcribe",
+                    "language": lang,
+                    "response_format": "json",
+                }
+                oa_resp = await oa.post(
+                    "https://api.openai.com/v1/audio/transcriptions",
+                    headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
+                    files=files,
+                    data=data,
+                )
+                if oa_resp.status_code == 200:
+                    payload = oa_resp.json()
+                    transcript = (payload.get("text") or "").strip()
+                    print(f"[STT/OpenAI] OK — {len(transcript)} chars", flush=True)
+                    return {
+                        "transcript": transcript,
+                        "detected_language": payload.get("language") or lang,
+                        "confidence": None,
+                        "provider": "openai",
+                    }
+                last_err = f"OpenAI Whisper {oa_resp.status_code}: {oa_resp.text[:300]}"
+                print(f"[STT/OpenAI] {last_err}", flush=True)
+        except Exception as e:
+            last_err = f"OpenAI Whisper exception: {e}"
+            print(f"[STT/OpenAI] {last_err}", flush=True)
 
-            data = resp.json()
-            alternatives = (
-                data.get("results", {})
-                .get("channels", [{}])[0]
-                .get("alternatives", [{}])
-            )
-            transcript = alternatives[0].get("transcript", "") if alternatives else ""
-            detected_lang = (
-                data.get("results", {})
-                .get("channels", [{}])[0]
-                .get("detected_language")
-            )
-            return {
-                "transcript": transcript,
-                "detected_language": detected_lang,
-                "confidence": alternatives[0].get("confidence") if alternatives else None,
+    # ── Provider 2: Deepgram nova-2 ─────────────────────────────────────
+    if DEEPGRAM_API_KEY:
+        try:
+            mime = (audio.content_type or "audio/webm").split(";")[0].strip()
+            if mime not in ("audio/webm", "audio/ogg", "audio/wav", "audio/mp3",
+                            "audio/mpeg", "audio/mp4", "audio/m4a", "audio/aac"):
+                mime = "audio/webm"
+
+            params: dict[str, Any] = {
+                "model": "nova-2",
+                "smart_format": "true",
+                "language": lang,
             }
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(500, f"STT failed: {e}")
+            async with httpx.AsyncClient(timeout=30) as client:
+                resp = await client.post(
+                    "https://api.deepgram.com/v1/listen",
+                    params=params,
+                    headers={
+                        "Authorization": f"Token {DEEPGRAM_API_KEY}",
+                        "Content-Type": mime,
+                    },
+                    content=audio_bytes,
+                )
+                if resp.status_code != 200:
+                    last_err = f"Deepgram {resp.status_code}: {resp.text[:300]}"
+                    print(f"[STT/Deepgram] {last_err}", flush=True)
+                else:
+                    data = resp.json()
+                    alternatives = (
+                        data.get("results", {})
+                        .get("channels", [{}])[0]
+                        .get("alternatives", [{}])
+                    )
+                    transcript = alternatives[0].get("transcript", "") if alternatives else ""
+                    detected_lang = (
+                        data.get("results", {})
+                        .get("channels", [{}])[0]
+                        .get("detected_language")
+                    )
+                    print(f"[STT/Deepgram] OK — {len(transcript)} chars", flush=True)
+                    return {
+                        "transcript": transcript,
+                        "detected_language": detected_lang,
+                        "confidence": alternatives[0].get("confidence") if alternatives else None,
+                        "provider": "deepgram",
+                    }
+        except Exception as e:
+            last_err = f"Deepgram exception: {e}"
+            print(f"[STT/Deepgram] {last_err}", flush=True)
+
+    # Both providers failed (or none configured)
+    raise HTTPException(502, f"STT failed: {last_err or 'no provider configured'}")
 
 
 @app.get("/api/export/{session_id}/pdf")

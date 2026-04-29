@@ -251,17 +251,18 @@ export default function VoiceInput({
         if (finalText) onTranscript(finalText);
       }
     } else {
-      // MediaRecorder.onstop will fire and POST to /api/stt. While
-      // Deepgram processes, show a "transcribing" placeholder so the
-      // user has feedback (otherwise they'd see nothing for 2-5s).
+      // MediaRecorder.onstop will fire (after the recorder flushes its
+      // last buffered chunk) and POST to /api/stt. We must NOT tear down
+      // the mic stream before stop() finishes flushing — that race lost
+      // the trailing audio. teardownMic now runs inside onstop instead.
       setIsRecording(false);
       setIsProcessing(true);
       const placeholder = t(locale, 'transcribingHint');
       setLiveText(placeholder);
       onInterim?.(placeholder);
-      try { mediaRecorderRef.current?.stop(); } catch {}
-      mediaRecorderRef.current = null;
-      teardownMic();
+      try { mediaRecorderRef.current?.stop(); } catch {
+        teardownMic();
+      }
     }
   }, [onTranscript, onInterim, teardownMic, locale]);
 
