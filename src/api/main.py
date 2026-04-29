@@ -147,8 +147,11 @@ Return ONLY valid JSON:
   "pre_visit_focus_areas": []
 }}"""
 
+    # Sonnet 4 finishes the EHR → structured-summary extraction in ~25-40s
+    # vs Opus 4's 60-120s. Cloudflare's quick-tunnel HTTP response timeout
+    # is 100s, so this also keeps remote (tunneled) ingest from 524ing.
     message = client.messages.create(
-        model="claude-opus-4-20250514",
+        model="claude-sonnet-4-20250514",
         max_tokens=4096,
         messages=[{"role": "user", "content": prompt}],
     )
